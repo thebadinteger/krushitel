@@ -19,6 +19,10 @@ type Settings struct {
 	// CVE-2017-3223): крашат auth-сервис камеры. По умолчанию выключено.
 	Destructive bool `json:"destructive"`
 
+	// WipeUsers — после PWNED/ADDED вычистить всех юзеров кроме admin
+	// и активного логина.
+	WipeUsers bool `json:"wipe_users"`
+
 	Lang        string `json:"lang"`        // "ru" | "en"
 	IsActivated bool   `json:"isActivated"` // приветствие пройдено
 
