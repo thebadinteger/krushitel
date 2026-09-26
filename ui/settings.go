@@ -15,6 +15,10 @@ type Settings struct {
 	Titles    bool `json:"titles"`
 	Preflight bool `json:"preflight"` // пре-флайт перед боем (33044/33045/39943/6117)
 
+	// Destructive — разрешить деструктивные оверфлоу (CVE-2025-31700 /
+	// CVE-2017-3223): крашат auth-сервис камеры. По умолчанию выключено.
+	Destructive bool `json:"destructive"`
+
 	Lang        string `json:"lang"`        // "ru" | "en"
 	IsActivated bool   `json:"isActivated"` // приветствие пройдено
 

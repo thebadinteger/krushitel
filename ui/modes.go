@@ -208,6 +208,7 @@ func launchExploitRun(m *model, inFile, outDir string, threads int, serials []st
 		DummyPass:   cfg.DummyPass,
 		Preflight:   cfg.Preflight,
 		Resume:      resume,
+		Destructive: cfg.Destructive,
 	}
 
 	go func() {
