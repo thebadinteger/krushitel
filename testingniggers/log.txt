@@ -1,0 +1,24 @@
+[23:31:24] xml import dir: testingniggers\xml
+[23:31:24] p2p-channel: terminal 404 Not Found — surfacing as the outcome
+[23:31:24] 4J08667PAG0A1FE — offline (verify)
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
+[23:31:24] p2p-channel provisional 100 Trying — waiting for the final response
