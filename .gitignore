@@ -1,0 +1,47 @@
+# креды/титры — не светить
+config.json
+
+# артефакты сборки
+*.exe
+*.exe~
+*.dll
+*.so
+bin/
+compiled/
+release/
+deps/
+krushitel
+krushitel_linux*
+titlegrab
+kt
+krlin
+
+# локальные тестовые данные
+pref.txt
+
+# вывод прогонов
+results/
+snapshots/
+xml/
+exp.txt
+vuln.txt
+alive.txt
+
+# тесты
+*_test.go
+
+# прогоны krushitel-beta: логи, ведомости, списки
+*.log
+1338port/
+1488port/
+37777port/
+folder/
+dahuasoset1337!/
+dahuaeatsit
+undervolt
+1337port
+1337prefix
+dahua_help_console.txt
+config_dump_1337.json
+__pycache__/
+tools/p2pwn/
