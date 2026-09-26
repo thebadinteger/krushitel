@@ -27,22 +27,22 @@ const (
 )
 
 var (
-	HEARTBEAT_TIMEOUT  = 90 * time.Second
-	RELAY_READ_TIMEOUT = 90 * time.Second
+	HEARTBEAT_TIMEOUT  = 10 * time.Second
+	RELAY_READ_TIMEOUT = 15 * time.Second
 )
 
 // rePunchEvery и silenceGiveUp задают интервалы восстановления STUN.
 var (
 	rePunchEvery  = 4 * time.Second
-	silenceGiveUp = 90 * time.Second
+	silenceGiveUp = 30 * time.Second
 )
 
 var (
-	relayLookupTimeout = 90 * time.Second
-	relayAgentTimeout  = 90 * time.Second
+	relayLookupTimeout = 3 * time.Second
+	relayAgentTimeout  = 3 * time.Second
 
-	relayChannelFirstInterval   = 5 * time.Second
-	relayChannelRetransInterval = 10 * time.Second
+	relayChannelFirstInterval   = 700 * time.Millisecond
+	relayChannelRetransInterval = 1200 * time.Millisecond
 	relayChannelMaxRetransmits  = 9
 )
 
@@ -140,7 +140,7 @@ func (t *Tunnel) releaseInitSlot() {
 func isQuickRestart(err error) bool { return errors.Is(err, errCloudStall) }
 
 // deviceAckTimeout — ожидание ack'ов в хендшейке (90с для медленных/очередных устройств).
-var deviceAckTimeout = 90 * time.Second
+var deviceAckTimeout = 12 * time.Second
 
 var ptcpHeartbeat = []byte{
 	0x13, 0x00, 0x00, 0x00,
@@ -944,21 +944,21 @@ func (t *Tunnel) establish() error {
 	deviceRemote.Send(stunInit)
 
 	var stunResponse []byte
-	deviceRemote.SetTimeout(5 * time.Second)
-	deadline := time.Now().Add(90 * time.Second)
+	deviceRemote.SetTimeout(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	attempt := 0
 
 	for time.Now().Before(deadline) {
 		data, addr, err := deviceRemote.RecvFrom(4096)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				if time.Now().Before(deadline) {
-					attempt++
+				attempt++
+				if attempt <= 2 && time.Now().Before(deadline) {
 					t.logf("Retransmit STUN init (attempt %d)", attempt)
 					deviceRemote.Send(stunInit)
 					continue
 				}
-				break
+				break // 2 ретрансмита исчерпаны — фолбэк на relay
 			}
 			break
 		}
@@ -1114,9 +1114,9 @@ func (t *Tunnel) waitRelayChannelAck(mainRemote *UDP, agentHost string, agentPor
 		mainRemote.SetRemote(agentHost, agentPort)
 	}
 
-	deadline := time.Now().Add(90 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	sendRelayChannel()
-	t.logf("waiting for relay-channel ack from agent %s:%d (timeout 90s)", agentHost, agentPort)
+	t.logf("waiting for relay-channel ack from agent %s:%d (timeout 15s)", agentHost, agentPort)
 
 	var lastErr error
 	attempt := 0
@@ -1516,8 +1516,8 @@ func (cs *channelSender) send(retransmit bool) {
 // Возвращает финальный (>= 200) ответ, если он пришёл в окне; nil —
 // вызывающий падает в обычное чтение RELAY_READ_TIMEOUT.
 var (
-	channelAckWindow  = 90 * time.Second // ожидание ответа камеры до 90 секунд
-	channelMaxRetrans = 5
+	channelAckWindow  = 1800 * time.Millisecond // захват: 100 Trying ~0.7 с, 200 ~1.1 с
+	channelMaxRetrans = 2
 
 	// smallPoolForce — потолок форса пула для веб-порта 80: выше
 	// начинается голод по таблице реалмов камеры (см. portPoolTarget).
@@ -1525,7 +1525,7 @@ var (
 )
 
 func waitChannelEarlyAck(u *UDP, cs *channelSender, logf func(string, ...any), ackWindow time.Duration) *DHResponse {
-	step := 15 * time.Second // ре-сенды каждые 15 секунд при тишине
+	step := channelAckWindow / 3 // ре-сенды ~0.6/1.2 с
 	start := time.Now()
 	deadline := start.Add(ackWindow)
 	nextSend := start.Add(step)
@@ -1623,7 +1623,7 @@ func respHeader(res *DHResponse, name string) string {
 // localChannelAckTimeout ограничивает best-effort чтение ack'а
 // local-channel. Var (как RELAY_READ_TIMEOUT), чтобы тесты могли сжимать.
 // Снапшотится в шаг при запуске — горутина никогда не читает var.
-var localChannelAckTimeout = 90 * time.Second
+var localChannelAckTimeout = 2 * time.Second
 
 // localChannelStep — иммутабельный набор входов одного local-channel
 // шага. Снапшотится ДО запуска горутины: шаг подписывает значениями,
@@ -1895,11 +1895,16 @@ func (t *Tunnel) serve() error {
 		go t.heartbeatLoop(done)
 		// Зомби-вотчдог: исходящий трафик без ответов триггерит рестарт на апп-диалекте
 		go t.zombieWatchdog(done)
-		// Киперы пула realm'ов: держат пребинженные realm'ы на каждый
-		// форвард-порт, чтобы волна браузерных коннектов не платила
-		// BIND round-trip.
-		t.readerWG.Add(len(oks))
+		// Киперы пула realm'ов: только там, где целевой уровень > 0.
+		// Ленивая механика (как в p2pwn): DHIP/SDK/RTSP-порты биндят
+		// realm строго по требованию в DialCamera — камера в каждый
+		// момент видит 1-3 реалма, таблица не раздувается. Пул живёт
+		// только для веб-порта 80 (форс smallPoolForce).
 		for _, o := range oks {
+			if t.portPoolTarget(o.remote) <= 0 {
+				continue
+			}
+			t.readerWG.Add(1)
 			t.poolMu.Lock()
 			t.pools[o.remote] = &poolState{}
 			t.poolMu.Unlock()

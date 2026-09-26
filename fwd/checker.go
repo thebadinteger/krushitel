@@ -29,7 +29,7 @@ import (
 
 // checkReadTimeout — чтение ack устройства мимо early-окна (см.
 // waitChannelEarlyAck). var, а не const — тесты подменяют на миллисекунды.
-var checkReadTimeout = 90 * time.Second
+var checkReadTimeout = 8 * time.Second
 
 // VerifyDevice — быстрый чек серийника через p2p-channel round-trip.
 // Возвращает (alive, needsAuth, err):

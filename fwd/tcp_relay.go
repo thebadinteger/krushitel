@@ -18,11 +18,11 @@ import (
 )
 
 const (
-	tcpRelayDialTimeout    = 90 * time.Second
-	tcpRelayBindTimeout    = 90 * time.Second
-	tcpRelayAckTimeout     = 90 * time.Second
-	tcpRelayFrameTimeout   = 90 * time.Second
-	tcpRelayWriteTimeout   = 90 * time.Second
+	tcpRelayDialTimeout    = 4 * time.Second
+	tcpRelayBindTimeout    = 15 * time.Second
+	tcpRelayAckTimeout     = 15 * time.Second
+	tcpRelayFrameTimeout   = 10 * time.Second
+	tcpRelayWriteTimeout   = 10 * time.Second
 	// Keepalive обязан быть строго короче HEARTBEAT_TIMEOUT (10с):
 	// каждый keepalive гоняет туда-обратно ACK, обновляющий LastRecv;
 	// touReadLoop убивает туннель, если LastRecv превышает 10с.

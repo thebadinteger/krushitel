@@ -63,13 +63,13 @@ var RelayAllocLimit = 6
 var (
 	relayAgentAllocRetries = 3
 	relayAgentAllocDelay   = 1500 * time.Millisecond
-	relayAgentAllocTimeout = 90 * time.Second
-	relayDispatchBase      = 90 * time.Second
-	relayDispatchMax       = 90 * time.Second
+	relayAgentAllocTimeout = 4 * time.Second
+	relayDispatchBase      = 3 * time.Second
+	relayDispatchMax       = 15 * time.Second
 	relayStartRetries      = 3
 	relayStartRetransDelay = 1200 * time.Millisecond
-	zombieRelayTimeout     = 90 * time.Second
-	zombieScanEvery        = 5 * time.Second
+	zombieRelayTimeout     = 12 * time.Second
+	zombieScanEvery        = 3 * time.Second
 )
 
 var (
