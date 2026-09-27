@@ -82,6 +82,12 @@ func loadSettings() {
 	}
 }
 
+// LoadSettings — чтение config.json для headless-режима (до старта CLI).
+func LoadSettings() { loadSettings() }
+
+// Config — снимок настроек для headless-режима.
+func Config() Settings { return cfg }
+
 func saveSettings() {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

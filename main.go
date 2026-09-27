@@ -41,6 +41,10 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+	// CLI-режим: любой запуск с -i/--input (или -h) идёт мимо TUI.
+	if runHeadless() {
+		return
+	}
 	if ui.Run() {
 		if lf != nil {
 			_ = lf.Close()
