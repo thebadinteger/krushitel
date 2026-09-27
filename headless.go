@@ -301,7 +301,7 @@ func runHeadlessIronScan(cfg ui.Settings, inFile, outFile string, threads, port 
 		mu.Unlock()
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := headlessSignals()
 	defer stop()
 
 	doneEvents := make(chan struct{})
@@ -493,6 +493,29 @@ func headlessBanner(online bool) {
 	os.Exit(0)
 }
 
+// headlessSignals — двойной Ctrl+C: первое нажатие мягко гасит ctx
+// (движок доезжает текущий серийник, session-маркер остаётся), второе —
+// force-выход. Висящие блокировки больше не игнорируют пользователя.
+func headlessSignals() (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sigCh := make(chan os.Signal, 4)
+	signal.Notify(sigCh, os.Interrupt)
+	go func() {
+		n := 0
+		for range sigCh {
+			n++
+			if n == 1 {
+				out("[!] detected CTRL + C! exiting... - 1x")
+				cancel()
+			} else {
+				out("[!] Force shutdown - 2x")
+				os.Exit(130)
+			}
+		}
+	}()
+	return ctx, func() { signal.Stop(sigCh); cancel() }
+}
+
 // headlessLogOpen — log.txt рядом с результатами (append между прогонами).
 func headlessLogOpen(path string) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -602,7 +625,7 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 	// глобальный лимит одновременных P2P-init'ов — паритет с TUI
 	fwd.InitLimit = 100
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := headlessSignals()
 	defer stop()
 
 	stats := &exploit.Stats{}
@@ -683,7 +706,7 @@ func runHeadlessTitles(cfg ui.Settings, inFile string, threads int,
 	if threads <= 0 {
 		threads = 200
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := headlessSignals()
 	defer stop()
 
 	stats := &exploit.TitlesStats{}
@@ -777,7 +800,7 @@ func runHeadlessScan(cfg ui.Settings, inFile, outFile string, threads int,
 		flog("resume скана: %s", info)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := headlessSignals()
 	defer stop()
 
 	stats := &scanner.ScanStats{}

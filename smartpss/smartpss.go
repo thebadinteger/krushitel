@@ -11,7 +11,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"sort"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -186,9 +188,10 @@ const xmlFooter = "</DeviceManager>\n"
 // (<Device>) на один файл (import_1.xml, import_2.xml, ...).
 type PerDeviceFiles struct {
 	mu     sync.Mutex
-	dir    string // "" = текущая
-	count  int    // всего записанных камер
-	prefix string // базовое имя файла, "import"
+	dir    string               // "" = текущая
+	count  int                  // всего записанных камер
+	prefix string               // базовое имя файла, "import"
+	seen   map[string]struct{}  // серийники, уже попавшие в импорт
 }
 
 func NewDeviceFiles(dir string) (*PerDeviceFiles, error) {
@@ -199,17 +202,68 @@ func NewDeviceFiles(dir string) (*PerDeviceFiles, error) {
 			return nil, err
 		}
 	}
-	return &PerDeviceFiles{dir: dir, prefix: "import"}, nil
+	p := &PerDeviceFiles{dir: dir, prefix: "import", seen: map[string]struct{}{}}
+	p.scanExisting()
+	return p, nil
+}
+
+// scanExisting — восстанавливает счётчик и дедуп-набор из уже лежащих
+// import_*.xml: счётчик с нуля перезаписывал существующие чанки (дубли,
+// «110 вместо 64»), а серийники без дедупа дублировались между прогонами.
+func (p *PerDeviceFiles) scanExisting() {
+	if p.dir == "" {
+		return
+	}
+	matches, err := filepath.Glob(filepath.Join(p.dir, p.prefix+"_*.xml"))
+	if err != nil {
+		return
+	}
+	sort.Strings(matches)
+	for _, path := range matches {
+		chunkIdx := 0
+		base := filepath.Base(path)
+		if i := strings.LastIndexByte(base, '_'); i >= 0 {
+			if n, err := strconv.Atoi(strings.TrimSuffix(base[i+1:], ".xml")); err == nil {
+				chunkIdx = n - 1
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		rows := 0
+		for _, line := range strings.Split(string(data), "\n") {
+			if !strings.Contains(line, "<Device name=\"") {
+				continue
+			}
+			rows++
+			if i := strings.Index(line, "name=\""); i >= 0 {
+				if rest := line[i+len("name=\""):]; len(rest) > 0 {
+					if j := strings.IndexByte(rest, '"'); j > 0 {
+						p.seen[rest[:j]] = struct{}{}
+					}
+				}
+			}
+		}
+		if rows > 0 && chunkIdx >= p.count/64 {
+			p.count = chunkIdx*64 + rows
+		}
+	}
 }
 
 // Append добавляет камеру в текущий чанк, при переполнении (64) начинает
-// новый файл. Потокобезопасно.
+// новый файл. Дубликаты серийников (повторный прогон / 605-ветка) молча
+// скипаются. Потокобезопасно.
 func (p *PerDeviceFiles) Append(serial, login, password string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if _, ok := p.seen[serial]; ok {
+		return nil
+	}
 	chunkIdx := p.count / 64
 	p.count++
+	p.seen[serial] = struct{}{}
 	return p.appendRow(chunkIdx, DeviceRow(serial, login, Encode(password)))
 }
 
@@ -226,11 +280,17 @@ func (p *PerDeviceFiles) appendRow(chunkIdx int, row string) error {
 		sb.WriteString(xmlHeader)
 		sb.WriteString("<DeviceManager version=\"2.0\">\n")
 	} else {
-		content := strings.TrimSuffix(string(existing), xmlFooter)
-		if !strings.HasSuffix(content, "\n") {
-			content += "\n"
+		// Режем по ПЕРВОМУ footer: битые/задвоенные хвосты от прошлых
+		// прогонов (два документа в одном файле) не переживают.
+		content := string(existing)
+		if i := strings.Index(content, xmlFooter); i >= 0 {
+			content = content[:i]
 		}
-		sb.WriteString(content)
+		content = strings.TrimRight(content, "\n")
+		if content != "" {
+			sb.WriteString(content)
+			sb.WriteString("\n")
+		}
 	}
 	sb.WriteString(row)
 	sb.WriteString("\n")
