@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -20,8 +21,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"krushitel/cloud"
@@ -95,7 +98,8 @@ func cloudAlive() bool {
 func headlessUsage() {
 	fmt.Print(`krushitel headless:
   -i, --input FILE     входной файл (exploit: серийники; titles: results.txt)
-  -m, --mode MODE      exploit (по умолчанию) | titles | scan
+  -m, --mode MODE      exploit (по умолчанию) | titles | scan | ipscan
+  -p, --port PORT      порт для ipscan (по умолчанию 5000)
   -o, --output DIR     папка результатов (по умолчанию — имя входного файла)
   -t, --threads N      потоки (по умолчанию 30)
   -f, --fresh          игнорировать session-маркер и done.txt (прогон заново)
@@ -136,6 +140,8 @@ func runHeadless() bool {
 	fs.IntVar(threads, "threads", 30, "алиас -t")
 	fresh := fs.Bool("f", false, "прогон заново, без resume")
 	fs.BoolVar(fresh, "fresh", false, "алиас -f")
+	port := fs.Int("p", 5000, "порт для ipscan")
+	fs.IntVar(port, "port", 5000, "алиас -p")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		headlessUsage()
 		os.Exit(2)
@@ -144,8 +150,8 @@ func runHeadless() bool {
 		out("[!] err: нужен -i/--input (файл серийников или results.txt для titles)")
 		os.Exit(2)
 	}
-	if *mode != "exploit" && *mode != "titles" && *mode != "scan" {
-		out("[!] err: неизвестный режим %q — доступен exploit | titles | scan", *mode)
+	if *mode != "exploit" && *mode != "titles" && *mode != "scan" && *mode != "ipscan" {
+		out("[!] err: неизвестный режим %q — доступен exploit | titles | scan | ipscan", *mode)
 		os.Exit(2)
 	}
 
@@ -199,7 +205,8 @@ func runHeadless() bool {
 		}
 	}
 
-	if !cloudAlive() {
+	// облачные режимы требуют easy4ip; ipscan ходит по прямым IP
+	if *mode != "ipscan" && !cloudAlive() {
 		out("[!] NetErr: Timeout (easy4ip) | Check your internet connection")
 		os.Exit(1)
 	}
@@ -211,8 +218,219 @@ func runHeadless() bool {
 		os.Exit(runHeadlessTitles(cfg, *inFile, *threads, progress, renderDone))
 	case "scan":
 		os.Exit(runHeadlessScan(cfg, *inFile, *outDir, *threads, progress, renderDone))
+	case "ipscan":
+		os.Exit(runHeadlessIPScan(cfg, *inFile, *outDir, *threads, *port, progress, renderDone))
 	}
 	return true
+}
+
+// ipRangeStream — распарсить вход ipscan и стримить IP в канал.
+// Форматы: файл со строками-диапазонами (или одна строка в -i):
+//
+//	192.168.1.0/24             CIDR
+//	192.168.1.5-192.168.1.40   диапазон целиком
+//	192.168.1.5-40             диапазон последнего октета
+//	192.168.1.5                одиночный адрес
+func ipRangeStream(inFile string) (int64, <-chan string, error) {
+	var lines []string
+	if _, err := os.Stat(inFile); err == nil {
+		data, rerr := os.ReadFile(inFile)
+		if rerr != nil {
+			return 0, nil, rerr
+		}
+		for _, l := range strings.Split(string(data), "\n") {
+			if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
+				lines = append(lines, l)
+			}
+		}
+	} else if t := strings.TrimSpace(inFile); t != "" {
+		lines = []string{t}
+	}
+	if len(lines) == 0 {
+		return 0, nil, fmt.Errorf("диапазонов нет (CIDR / a.b.c.d-e / a.b.c.d-x / одиночный IP)")
+	}
+
+	type seg struct {
+		start, end uint32
+	}
+	var segs []seg
+	var total int64
+	const capMax = int64(16 << 20)
+	for _, l := range lines {
+		switch {
+		case strings.Contains(l, "/"):
+			_, ipnet, err := net.ParseCIDR(l)
+			if err != nil {
+				return 0, nil, fmt.Errorf("CIDR %q: %w", l, err)
+			}
+			ones, _ := ipnet.Mask.Size()
+			s := binary.BigEndian.Uint32(ipnet.IP.To4())
+			var e uint32
+			if ones <= 0 {
+				s, e = 0, 0xffffffff
+			} else if ones >= 32 {
+				e = s
+			} else {
+				e = s | ((1 << (32 - ones)) - 1)
+			}
+			segs = append(segs, seg{s, e})
+			total += int64(e - s + 1)
+		case strings.Contains(l, "-") && strings.Count(l, ".") >= 6:
+			parts := strings.SplitN(l, "-", 2)
+			a := net.ParseIP(strings.TrimSpace(parts[0])).To4()
+			b := net.ParseIP(strings.TrimSpace(parts[1])).To4()
+			if a == nil || b == nil {
+				return 0, nil, fmt.Errorf("диапазон %q: плохой IP", l)
+			}
+			s := binary.BigEndian.Uint32(a)
+			e := binary.BigEndian.Uint32(b)
+			if e < s {
+				return 0, nil, fmt.Errorf("диапазон %q: конец раньше начала", l)
+			}
+			segs = append(segs, seg{s, e})
+			total += int64(e - s + 1)
+		case strings.Contains(l, "-"):
+			parts := strings.SplitN(l, "-", 2)
+			base := net.ParseIP(strings.TrimSpace(parts[0])).To4()
+			if base == nil {
+				return 0, nil, fmt.Errorf("диапазон %q: плохой IP", l)
+			}
+			x, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+			if err != nil {
+				return 0, nil, fmt.Errorf("диапазон %q: %w", l, err)
+			}
+			s := binary.BigEndian.Uint32(base)
+			e := (s & 0xffffff00) | uint32(x)
+			if e < s {
+				return 0, nil, fmt.Errorf("диапазон %q: конец раньше начала", l)
+			}
+			segs = append(segs, seg{s, e})
+			total += int64(e - s + 1)
+		default:
+			ip := net.ParseIP(l).To4()
+			if ip == nil {
+				return 0, nil, fmt.Errorf("плохой адрес %q", l)
+			}
+			segs = append(segs, seg{binary.BigEndian.Uint32(ip), binary.BigEndian.Uint32(ip)})
+			total++
+		}
+	}
+	if total > capMax {
+		return 0, nil, fmt.Errorf("диапазон слишком велик (%d адресов) — режь на части", total)
+	}
+
+	ch := make(chan string, 4096)
+	go func() {
+		defer close(ch)
+		for _, g := range segs {
+			for v := g.start; ; v++ {
+				ip := make(net.IP, 4)
+				binary.BigEndian.PutUint32(ip, v)
+				ch <- ip.String()
+				if v == g.end {
+					break
+				}
+			}
+		}
+	}()
+	return total, ch, nil
+}
+
+// runHeadlessIPScan — прямой скан по IP: TCP-коннект на порт, затем
+// опознание DHIP-пробой (серийник + модель). Облако не участвует.
+func runHeadlessIPScan(cfg ui.Settings, inFile, outFile string, threads, port int,
+	progress func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
+	total, ips, err := ipRangeStream(inFile)
+	if err != nil {
+		out("[!] err: %v", err)
+		return 2
+	}
+	if outFile == "" {
+		// IP-строки с точками ломают filepath.Ext — точки в подчёркивания
+		outFile = strings.ReplaceAll(filepath.Base(inFile), ".", "_") + "_ipscan.txt"
+	}
+	if filepath.Ext(outFile) == "" {
+		outFile += ".txt"
+	}
+	if threads <= 0 {
+		threads = 200
+	}
+
+	headlessLogOpen(strings.TrimSuffix(outFile, filepath.Ext(outFile)) + ".log")
+	dhip.CallTimeout = 12 * time.Second
+	defer func() { dhip.CallTimeout = 20 * time.Second }()
+
+	headlessBanner(true)
+	out("started ip scanning %d addrs (port %d)", total, port)
+	out("saving results at //%s", outFile)
+
+	var checked, found int64
+	var mu sync.Mutex
+	resFile, rerr := os.OpenFile(outFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if rerr != nil {
+		out("[!] err: выходной файл: %v", rerr)
+		return 2
+	}
+	defer resFile.Close()
+	save := func(line string) {
+		mu.Lock()
+		fmt.Fprintln(resFile, line)
+		mu.Unlock()
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	doneEvents := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				progress(atomic.LoadInt64(&checked), total, fmt.Sprintf("found: %d", atomic.LoadInt64(&found)))
+			case <-doneEvents:
+				return
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for w := 0; w < threads; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ip := range ips {
+				if ctx.Err() != nil {
+					return
+				}
+				addr := net.JoinHostPort(ip, strconv.Itoa(port))
+				conn, cerr := net.DialTimeout("tcp", addr, 2*time.Second)
+				if cerr != nil {
+					atomic.AddInt64(&checked, 1)
+					continue
+				}
+				conn.Close()
+				serial, model, ok := dhip.ProbeDeviceDial(dhip.AddrDialer(addr, 12*time.Second))
+				atomic.AddInt64(&checked, 1)
+				if ok {
+					atomic.AddInt64(&found, 1)
+					line := fmt.Sprintf("%s | %s | %s", ip, serial, model)
+					save(line)
+					flog("[+] %s", line)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(doneEvents)
+	renderDone(atomic.LoadInt64(&checked), total, fmt.Sprintf("found: %d", atomic.LoadInt64(&found)))
+
+	out("ipscan finished")
+	if ctx.Err() != nil {
+		return 130
+	}
+	return 0
 }
 
 // headlessBanner — баннер + автоапдейт: есть релиз свежее — вопрос y/n,
