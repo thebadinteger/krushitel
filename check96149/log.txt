@@ -8,3 +8,12 @@ saving results at //check96149
 0/1 | pwned: 0 · added: 0 | 01:02
 0/1 | pwned: 0 · added: 0 | 01:33
 0/1 | pwned: 0 · added: 0 | 02:03
+[01:37] krushitel v1.4-beta (latest)
+started exploiting 1 SNs
+saving results at //check96149
+[!] folder check96149 already exists! rewrite or modify folder? (r/m)
+[01:37:59] [+] xml-импорт в папку: check96149\xml
+[01:38:00] p2p-channel provisional 100 Trying — waiting for the final response
+0/1 | pwned: 0 · added: 0 | 00:00
+[01:38:07] 4J08667PAG96149 — STUN не сработал! пробуем через relay
+[01:38:07] 4J08667PAG96149 — туннель ок

@@ -516,7 +516,25 @@ func headlessSignals() (context.Context, func()) {
 	return ctx, func() { signal.Stop(sigCh); cancel() }
 }
 
-// headlessLogOpen — log.txt рядом с результатами (append между прогонами).
+// headlessAskRewrite — «rewrite or modify?» для существующего выхода.
+// true = rewrite (с нуля), false = modify (дописать/продолжить, дефолт).
+// Пустой ответ в пайпе = modify: данные не теряем.
+func headlessAskRewrite(path string, isDir bool) bool {
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() != isDir {
+		return true // нет — спрашивать не о чем
+	}
+	label := "file"
+	if isDir {
+		label = "folder"
+	}
+	out("[!] %s %s already exists! rewrite or modify %s? (r/m)", label, path, label)
+	var ans string
+	_, _ = fmt.Scanln(&ans)
+	ans = strings.ToLower(strings.TrimSpace(ans))
+	return ans == "r" || ans == "rewrite"
+}
+
 func headlessLogOpen(path string) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
@@ -609,6 +627,14 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 	headlessBanner(true)
 	out("started exploiting %d SNs", len(serials))
 	out("saving results at //%s", outDir)
+
+	rewrite := headlessAskRewrite(outDir, true)
+	if rewrite {
+		for _, f := range []string{exploit.ResultsFile, exploit.DoneFile, exploit.NoStunFile, exploit.SessionFile} {
+			_ = os.Remove(filepath.Join(outDir, f))
+		}
+		fresh = true
+	}
 
 	// серийники, уже стоящие у нас в results.txt, повторно не крутим —
 	// реэксплойт только пересаживает лишних юзеров и плодит дубли
@@ -809,6 +835,7 @@ func runHeadlessScan(cfg ui.Settings, inFile, outFile string, threads int,
 		threads = 30
 	}
 
+	appendMode := !headlessAskRewrite(outFile, false)
 	headlessLogOpen(strings.TrimSuffix(outFile, filepath.Ext(outFile)) + ".log")
 	scanner.Debug = cfg.Debug
 	scanner.LogHook = func(line string) { flog("%s", line) }
@@ -848,7 +875,7 @@ func runHeadlessScan(cfg ui.Settings, inFile, outFile string, threads int,
 		}
 	}()
 
-	scanner.RunPrefixes(ctx, prefixes, outFile, false, false, threads, stats, events)
+	scanner.RunPrefixes(ctx, prefixes, outFile, appendMode, false, threads, stats, events)
 
 	close(doneEvents)
 	close(events)
