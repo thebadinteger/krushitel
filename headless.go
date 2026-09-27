@@ -192,16 +192,18 @@ func runHeadless() bool {
 	renderDone := func(done, total int64, hits string) {
 		logMu.Lock()
 		defer logMu.Unlock()
+		final := fmt.Sprintf("%d/%d | %s | %s", done, total, hits, elapsed())
 		if tty {
-			final := fmt.Sprintf("%d/%d | %s | %s", done, total, hits, elapsed())
 			if len(final) < lineLen {
 				final += strings.Repeat(" ", lineLen-len(final))
 			}
 			fmt.Printf("\r%s\n", final)
 			lineLen = 0
-			if logFile != nil {
-				fmt.Fprintln(logFile, final)
-			}
+		} else {
+			fmt.Println(final)
+		}
+		if logFile != nil {
+			fmt.Fprintln(logFile, final)
 		}
 	}
 
@@ -615,7 +617,7 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 		for {
 			select {
 			case <-ticker.C:
-				progress(stats.Processed, stats.Total, fmt.Sprintf("pwned: %d", stats.Pwned))
+				progress(stats.Processed, stats.Total, fmt.Sprintf("pwned: %d · added: %d", stats.Pwned, stats.Added))
 			case <-doneEvents:
 				return
 			}
@@ -639,7 +641,7 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 
 	close(doneEvents)
 	close(events)
-	renderDone(stats.Processed, stats.Total, fmt.Sprintf("pwned: %d", stats.Pwned))
+	renderDone(stats.Processed, stats.Total, fmt.Sprintf("pwned: %d · added: %d", stats.Pwned, stats.Added))
 
 	if stats.ErrorMsg != "" {
 		out("[!] err: %s", stats.ErrorMsg)

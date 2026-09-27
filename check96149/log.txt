@@ -1,0 +1,10 @@
+[22:31] krushitel v1.4-beta (latest)
+started exploiting 1 SNs
+saving results at //check96149
+[22:32:01] xml import dir: check96149\xml
+0/1 | pwned: 0 · added: 0 | 00:02
+0/1 | pwned: 0 · added: 0 | 00:32
+[22:32:38] 4J08667PAG96149 — STUN failed! trying via relay
+0/1 | pwned: 0 · added: 0 | 01:02
+0/1 | pwned: 0 · added: 0 | 01:33
+0/1 | pwned: 0 · added: 0 | 02:03

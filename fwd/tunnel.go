@@ -443,6 +443,25 @@ func (t *Tunnel) isStopped() bool {
 	return t.stopped
 }
 
+// Стрик punch-неудач по всем туннелям прогона: сети с мёртвым NAT
+// не пробиваются никогда — пусть punch стоит 3 секунды, не 10.
+var punchFailStreak int64
+
+func punchWindow() time.Duration {
+	switch n := atomic.LoadInt64(&punchFailStreak); {
+	case n >= 8:
+		return punchWindowFloor
+	case n >= 3:
+		return punchWindowHalf
+	default:
+		return punchWindowFull
+	}
+}
+
+func punchFail() { atomic.AddInt64(&punchFailStreak, 1) }
+
+func punchSucceed() { atomic.StoreInt64(&punchFailStreak, 0) }
+
 func (t *Tunnel) Run() error {
 	// Жёсткий дедлайн подъёма: молчаливая камера на любой фазе хендшейка
 	// (STUN прошёл, PTCP молчит и т.п.) не должна вешать прогон. По
@@ -961,7 +980,10 @@ func (t *Tunnel) establish() error {
 
 	var stunResponse []byte
 	deviceRemote.SetTimeout(2 * time.Second)
-	deadline := time.Now().Add(10 * time.Second)
+	// Адаптивное окно: у части сетей punch не пробивается НИКОГДА —
+	// после серии неудач окно сжимается (10с → 5с → 3с), чтобы не жечь
+	// по 10 секунд на каждом серийнике. Успех сбрасывает стрик.
+	deadline := time.Now().Add(punchWindow())
 	attempt := 0
 
 	for time.Now().Before(deadline) {
@@ -974,6 +996,7 @@ func (t *Tunnel) establish() error {
 					deviceRemote.Send(stunInit)
 					continue
 				}
+				punchFail()
 				break // 2 ретрансмита исчерпаны — фолбэк на relay
 			}
 			break
@@ -988,6 +1011,7 @@ func (t *Tunnel) establish() error {
 		if string(magic) == "\xFE\xFE\xFF\xE7" {
 			stunResponse = data
 			t.logf("Got STUN response (fefeffe7)")
+			punchSucceed()
 			break
 		} else if string(magic) == "\xFF\xFE\xFF\xE7" {
 			if len(data) < 40 {
@@ -1545,6 +1569,10 @@ var (
 	// (punch 10с + фолбэк на relay + до 3 quick-рестартов) укладывается
 	// с запасом; висящий — гасится watchdog'ом (см. Run).
 	liftDeadline = 120 * time.Second
+
+	punchWindowFull  = 10 * time.Second // сеть, где punch живой
+	punchWindowHalf  = 5 * time.Second  // 3+ неудач подряд
+	punchWindowFloor = 3 * time.Second  // 8+ неудач подряд
 )
 
 func waitChannelEarlyAck(u *UDP, cs *channelSender, logf func(string, ...any), ackWindow time.Duration) *DHResponse {
