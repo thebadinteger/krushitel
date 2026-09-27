@@ -25,6 +25,7 @@ type jpegDecoder struct {
 	h264Dec *decoder.Decoder
 	hevcDec *hevc.Decoder
 	closed  bool
+	failed  bool // сломался на кривом кадре — дальше не кормим
 }
 
 func newJPEGDecoder(codec string) (*jpegDecoder, error) {
@@ -57,13 +58,29 @@ func (d *jpegDecoder) close() {
 // feed — один доступ-юнит в формате Annex-B.
 // Возвращает готовые байты JPEG, когда кадр успешно декодирован.
 // До первого ключевого кадра (IDR) или при неполном NAL возвращает nil, nil.
-func (d *jpegDecoder) feed(au []byte) ([]byte, error) {
+func (d *jpegDecoder) feed(au []byte) (jpeg []byte, err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.closed || len(au) == 0 {
 		return nil, nil
 	}
+	if d.failed {
+		return nil, errors.New("rtsp: декодер сломан на кривом кадре")
+	}
+
+	// hi264/h265 — чужой код, паникующий на кривых IDR (index out of
+	// range в intra-prediction при пустых соседях). Паника тут летит из
+	// ГОРУТИНЫ gortsplib-ридера — recover в main её не ловит, процесс
+	// умирает без сплеша. Ловим, глушим декодер, отдаём ошибку.
+	defer func() {
+		if r := recover(); r != nil {
+			d.failed = true
+			d.h264Dec = nil
+			d.hevcDec = nil
+			jpeg, err = nil, fmt.Errorf("rtsp: декодер паникнул на кадре: %v", r)
+		}
+	}()
 
 	switch d.codec {
 	case "h264":

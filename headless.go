@@ -32,6 +32,7 @@ import (
 	"krushitel/exploit"
 	"krushitel/fwd"
 	"krushitel/ironscan"
+	"krushitel/rtsp"
 	"krushitel/scanner"
 	"krushitel/ui"
 	"krushitel/update"
@@ -578,6 +579,7 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 
 	_ = os.MkdirAll(outDir, 0755)
 	headlessLogOpen(filepath.Join(outDir, "log.txt"))
+	rtsp.StdoutSink = logFile
 	unhook := wireHooks(cfg)
 	defer unhook()
 

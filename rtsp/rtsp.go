@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"sync"
 	"time"
 
@@ -25,10 +26,53 @@ func Snapshot(addr, user, pass string, timeout time.Duration) ([]byte, error) {
 }
 
 // SnapshotChannel получает JPEG-кадр с указанного канала через RTSP.
+// StdoutSink — куда глотать чужие stdout-принты декодера (hi264 рапортует
+// «WARNING: Skipping I_PCM...» прямым fmt.Printf). nil = /dev/null.
+// Ставится из головного пакета на лог-файл прогона.
+var (
+	StdoutSink *os.File // лог-файл прогона; nil = /dev/null
+	stdoutMu   sync.Mutex
+	swapDepth  int
+	swapSaved  *os.File
+	swapDev    *os.File
+)
+
+func swapStdout() func() {
+	stdoutMu.Lock()
+	swapDepth++
+	if swapDepth == 1 {
+		swapSaved = os.Stdout
+		if StdoutSink != nil {
+			os.Stdout = StdoutSink
+		} else {
+			swapDev, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+			if swapDev != nil {
+				os.Stdout = swapDev
+			}
+		}
+	}
+	stdoutMu.Unlock()
+	return func() {
+		stdoutMu.Lock()
+		swapDepth--
+		if swapDepth == 0 && swapSaved != nil {
+			os.Stdout = swapSaved
+			swapSaved = nil
+		}
+		if swapDepth == 0 && swapDev != nil {
+			swapDev.Close()
+			swapDev = nil
+		}
+		stdoutMu.Unlock()
+	}
+}
+
 func SnapshotChannel(addr, user, pass string, channel int, timeout time.Duration) ([]byte, error) {
 	if channel <= 0 {
 		channel = 1
 	}
+	restore := swapStdout()
+	defer restore()
 	var lastErr error
 	for _, subtype := range []int{1, 0} {
 		u, err := base.ParseURL(fmt.Sprintf("rtsp://%s/cam/realmonitor?channel=%d&subtype=%d", addr, channel, subtype))
@@ -189,11 +233,11 @@ func snapshotSub(u *base.URL, timeout time.Duration) ([]byte, error) {
 
 	// ищем H264 или H265 трек; параметр-сеты из SDP пойдут преамбулой
 	var (
-		media   *description.Media
-		rtpFmt  format.Format
-		rtpDec  rtpADecoder
-		codec   string
-		params  [][]byte // Annex-B: [VPS] SPS PPS
+		media  *description.Media
+		rtpFmt format.Format
+		rtpDec rtpADecoder
+		codec  string
+		params [][]byte // Annex-B: [VPS] SPS PPS
 	)
 
 	for _, m := range session.Medias {
