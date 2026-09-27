@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"krushitel/fwd"
+	"krushitel/i18n"
 )
 
 // Settings — как в krushitel (config.json), но без dummy-полей: тут только
@@ -87,6 +88,10 @@ func LoadSettings() { loadSettings() }
 
 // Config — снимок настроек для headless-режима.
 func Config() Settings { return cfg }
+
+// ApplyLang — выставить язык i18n из конфига (headless не проходит через
+// ui.Run, где это делается само).
+func ApplyLang() { i18n.SetLang(cfg.Lang) }
 
 func saveSettings() {
 	data, err := json.MarshalIndent(cfg, "", "  ")

