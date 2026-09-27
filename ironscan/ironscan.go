@@ -194,14 +194,26 @@ func probeDevice(ctx context.Context, target string, port int, timeout time.Dura
 }
 
 func tryConnect(ctx context.Context, addr string, probe []byte, timeout time.Duration) Result {
+	if ironWait(ctx) != nil {
+		return Result{Err: "cancelled"}
+	}
+	dialStart := time.Now()
 	d := net.Dialer{Timeout: timeout}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		if strings.Contains(err.Error(), "connection refused") {
+			ironRecord(ironResRefused, 0)
 			return Result{Err: "refused"}
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			ironRecord(ironResTimeout, 0)
+		} else {
+			// не refused и не таймаут — локальная беда (буферы/маршрут)
+			ironRecord(ironResLocalErr, 0)
 		}
 		return Result{Err: err.Error()}
 	}
+	dialRTT := time.Since(dialStart)
 	defer conn.Close()
 
 	// Отмена: немедленный дедлайн будит блокирующий read при ctx.Done,
@@ -221,10 +233,14 @@ func tryConnect(ctx context.Context, addr string, probe []byte, timeout time.Dur
 	hdr := make([]byte, 32)
 	if _, err = io.ReadFull(conn, hdr); err != nil {
 		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			ironRecord(ironResTimeout, 0)
 			return Result{Err: "timeout"}
 		}
+		ironRecord(ironResLocalErr, 0)
 		return Result{Err: err.Error()}
 	}
+
+	ironRecord(ironResOK, dialRTT)
 
 	var response []byte
 	if hdr[0] == 0xb0 && (hdr[1] == 0x00 || hdr[1] == 0x01) || hdr[0] == 0xf6 {
@@ -340,6 +356,17 @@ func Run(ctx context.Context, opts Options, onResult func(Result)) error {
 	if workers > len(opts.Targets) {
 		workers = len(opts.Targets)
 	}
+
+	// AIMD-губернатор: старт с безопасного минимума, предел канала/роутера
+	// находит сам и держится у него
+	ironPPS = ironStartPPS
+	limiter := newIronLimiter(ironStartPPS)
+	go governorLoop(ctx, limiter, func(f string, a ...any) {
+		if LogHook != nil {
+			LogHook(fmt.Sprintf(f, a...))
+		}
+	})
+	ironLimiterSet(limiter)
 
 	jobs := make(chan string)
 	var wg sync.WaitGroup

@@ -282,6 +282,9 @@ func runHeadlessIronScan(cfg ui.Settings, inFile, outFile string, threads, port 
 	}
 
 	headlessLogOpen(strings.TrimSuffix(outFile, filepath.Ext(outFile)) + ".log")
+	rewriteFile := !headlessAskRewrite(outFile, false)
+	ironscan.LogHook = func(f string, a ...any) { flog("%s", fmt.Sprintf(f, a...)) }
+	defer func() { ironscan.LogHook = nil }()
 
 	headlessBanner(false)
 	out("started ironscanning %d targets (port %d)", len(targets), port)
@@ -289,7 +292,11 @@ func runHeadlessIronScan(cfg ui.Settings, inFile, outFile string, threads, port 
 
 	var checked, found int64
 	var mu sync.Mutex
-	resFile, rerr := os.OpenFile(outFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	if !rewriteFile {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	}
+	resFile, rerr := os.OpenFile(outFile, flags, 0644)
 	if rerr != nil {
 		out("[!] err: выходной файл: %v", rerr)
 		return 2
