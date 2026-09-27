@@ -98,8 +98,8 @@ func cloudAlive() bool {
 func headlessUsage() {
 	fmt.Print(`krushitel headless:
   -i, --input FILE     входной файл (exploit: серийники; titles: results.txt)
-  -m, --mode MODE      exploit (по умолчанию) | titles | scan | ipscan
-  -p, --port PORT      порт для ipscan (по умолчанию 5000)
+  -m, --mode MODE      exploit (по умолчанию) | titles | scan | ipscan | ironscan
+  -p, --port PORT      порт для ipscan (5000) / ironscan (37777)
   -o, --output DIR     папка результатов (по умолчанию — имя входного файла)
   -t, --threads N      потоки (по умолчанию 30)
   -f, --fresh          игнорировать session-маркер и done.txt (прогон заново)
@@ -140,8 +140,8 @@ func runHeadless() bool {
 	fs.IntVar(threads, "threads", 30, "алиас -t")
 	fresh := fs.Bool("f", false, "прогон заново, без resume")
 	fs.BoolVar(fresh, "fresh", false, "алиас -f")
-	port := fs.Int("p", 5000, "порт для ipscan")
-	fs.IntVar(port, "port", 5000, "алиас -p")
+	port := fs.Int("p", 0, "порт для ipscan (5000) / ironscan (37777)")
+	fs.IntVar(port, "port", 0, "алиас -p")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		headlessUsage()
 		os.Exit(2)
@@ -150,8 +150,8 @@ func runHeadless() bool {
 		out("[!] err: нужен -i/--input (файл серийников или results.txt для titles)")
 		os.Exit(2)
 	}
-	if *mode != "exploit" && *mode != "titles" && *mode != "scan" && *mode != "ipscan" {
-		out("[!] err: неизвестный режим %q — доступен exploit | titles | scan | ipscan", *mode)
+	if *mode != "exploit" && *mode != "titles" && *mode != "scan" && *mode != "ipscan" && *mode != "ironscan" {
+		out("[!] err: неизвестный режим %q — доступен exploit | titles | scan | ipscan | ironscan", *mode)
 		os.Exit(2)
 	}
 
@@ -205,8 +205,8 @@ func runHeadless() bool {
 		}
 	}
 
-	// облачные режимы требуют easy4ip; ipscan ходит по прямым IP
-	if *mode != "ipscan" && !cloudAlive() {
+	// облачные режимы требуют easy4ip; ipscan/ironscan ходят по прямым IP
+	if *mode != "ipscan" && *mode != "ironscan" && !cloudAlive() {
 		out("[!] NetErr: Timeout (easy4ip) | Check your internet connection")
 		os.Exit(1)
 	}
@@ -220,8 +220,131 @@ func runHeadless() bool {
 		os.Exit(runHeadlessScan(cfg, *inFile, *outDir, *threads, progress, renderDone))
 	case "ipscan":
 		os.Exit(runHeadlessIPScan(cfg, *inFile, *outDir, *threads, *port, progress, renderDone))
+	case "ironscan":
+		os.Exit(runHeadlessIronScan(cfg, *inFile, *outDir, *threads, *port, progress, renderDone))
 	}
 	return true
+}
+
+// runHeadlessIronScan — ironscan: SDK-проба 37777 (DVRIP Realm 0xa001) по
+// прямым целям, серийник/модель/прошивка из ответа. Формат целей: список
+// IP/хостов (UTF-16 с BOM понимается), CIDR/диапазоны расширяются.
+func runHeadlessIronScan(cfg ui.Settings, inFile, outFile string, threads, port int,
+	progress func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
+	targets, terr := ironscan.LoadTargets(inFile)
+	if terr != nil {
+		// файла нет — может, одиночная цель прямо в -i
+		if t := strings.TrimSpace(inFile); t != "" && !strings.ContainsAny(t, " 	") {
+			targets = []string{t}
+		} else {
+			out("[!] err: входной файл: %v", terr)
+			return 2
+		}
+	}
+	// CIDR/диапазоны в списке — разворачиваем
+	expandable := false
+	for _, t := range targets {
+		if strings.ContainsAny(t, "/-") {
+			expandable = true
+			break
+		}
+	}
+	if expandable {
+		var expanded []string
+		for _, t := range targets {
+			_, ch, rerr := ipRangeStream(t)
+			if rerr != nil {
+				expanded = append(expanded, t)
+				continue
+			}
+			for ip := range ch {
+				expanded = append(expanded, ip)
+			}
+		}
+		targets = expanded
+	}
+	if len(targets) == 0 {
+		out("[!] err: целей нет")
+		return 2
+	}
+	if port == 0 {
+		port = 37777
+	}
+	if outFile == "" {
+		outFile = strings.ReplaceAll(filepath.Base(inFile), ".", "_") + "_iron.txt"
+	}
+	if filepath.Ext(outFile) == "" {
+		outFile += ".txt"
+	}
+	if threads <= 0 {
+		threads = 200
+	}
+
+	headlessLogOpen(strings.TrimSuffix(outFile, filepath.Ext(outFile)) + ".log")
+
+	headlessBanner(false)
+	out("started ironscanning %d targets (port %d)", len(targets), port)
+	out("saving results at //%s", outFile)
+
+	var checked, found int64
+	var mu sync.Mutex
+	resFile, rerr := os.OpenFile(outFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if rerr != nil {
+		out("[!] err: выходной файл: %v", rerr)
+		return 2
+	}
+	defer resFile.Close()
+	save := func(line string) {
+		mu.Lock()
+		fmt.Fprintln(resFile, line)
+		mu.Unlock()
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	doneEvents := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				progress(atomic.LoadInt64(&checked), int64(len(targets)), fmt.Sprintf("found: %d", atomic.LoadInt64(&found)))
+			case <-doneEvents:
+				return
+			}
+		}
+	}()
+
+	irErr := ironscan.Run(ctx, ironscan.Options{
+		Targets:     targets,
+		Port:        port,
+		Timeout:     5 * time.Second,
+		Concurrency: threads,
+	}, func(r ironscan.Result) {
+		atomic.AddInt64(&checked, 1)
+		if r.Ok() {
+			atomic.AddInt64(&found, 1)
+			line := fmt.Sprintf("%s | %s | %s | %s", r.Target, r.Serial, r.Model, r.Firmware)
+			save(line)
+			flog("[+] %s", line)
+		} else if r.Err != "" {
+			flog("[-] %s: %s", r.Target, r.Err)
+		}
+	})
+	close(doneEvents)
+	renderDone(atomic.LoadInt64(&checked), int64(len(targets)), fmt.Sprintf("found: %d", atomic.LoadInt64(&found)))
+
+	if irErr != nil {
+		out("[!] err: ironscan: %v", irErr)
+		return 1
+	}
+	out("ironscan finished")
+	if ctx.Err() != nil {
+		return 130
+	}
+	return 0
 }
 
 // ipRangeStream — распарсить вход ipscan и стримить IP в канал.
@@ -354,6 +477,9 @@ func runHeadlessIPScan(cfg ui.Settings, inFile, outFile string, threads, port in
 	}
 	if threads <= 0 {
 		threads = 200
+	}
+	if port == 0 {
+		port = 5000
 	}
 
 	headlessLogOpen(strings.TrimSuffix(outFile, filepath.Ext(outFile)) + ".log")
