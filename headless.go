@@ -610,7 +610,31 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 	out("started exploiting %d SNs", len(serials))
 	out("saving results at //%s", outDir)
 
+	// серийники, уже стоящие у нас в results.txt, повторно не крутим —
+	// реэксплойт только пересаживает лишних юзеров и плодит дубли
+	pwnedBefore := map[string]struct{}{}
+	if data, rerr := os.ReadFile(filepath.Join(outDir, exploit.ResultsFile)); rerr == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if i := strings.IndexByte(line, ','); i > 0 {
+				if sn := ironscan.SanitizeSerial(line[:i]); sn != "" {
+					pwnedBefore[sn] = struct{}{}
+				}
+			}
+		}
+	}
 	remaining, resume := resumeFilter(serials, outDir, fresh)
+	if !fresh && len(pwnedBefore) > 0 {
+		kept := remaining[:0]
+		for _, sn := range remaining {
+			if _, ok := pwnedBefore[sn]; !ok {
+				kept = append(kept, sn)
+			}
+		}
+		if d := len(remaining) - len(kept); d > 0 {
+			remaining = kept
+			fmt.Printf("[%s] already in results: %d serial(s) skipped\n", time.Now().Format("15:04"), d)
+		}
+	}
 
 	// session-маркер: живёт до чистого завершения (движок удалит)
 	sess, _ := json.Marshal(struct {
