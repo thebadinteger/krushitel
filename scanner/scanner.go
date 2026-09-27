@@ -140,13 +140,13 @@ type ScanStats struct {
 	// атомарные: тикер UI читает их из другого горутинного потока.
 	// Чтение — один стрим-проход (см. streamSerials): прогресс по байтам,
 	// память O(окно дедупа), а не O(файл).
-	Reading        int64 // 1 = идёт чтение/санитайз входного файла
-	ReadLines      int64 // обработано строк на фазе санитайза
-	ReadBytes      int64 // прочитано байт входа
-	ReadTotalBytes int64 // размер входа в байтах (0 = неизвестен)
-	ReadValid      int64 // найдено валидных серийников
-	DedupResets    int64 // сколько раз сбросилось окно дедупа (см. DedupWindow)
-	AliveRate float64 // живых в минуту за последнее окно наблюдения (обнова каждые 10с)
+	Reading        int64   // 1 = идёт чтение/санитайз входного файла
+	ReadLines      int64   // обработано строк на фазе санитайза
+	ReadBytes      int64   // прочитано байт входа
+	ReadTotalBytes int64   // размер входа в байтах (0 = неизвестен)
+	ReadValid      int64   // найдено валидных серийников
+	DedupResets    int64   // сколько раз сбросилось окно дедупа (см. DedupWindow)
+	AliveRate      float64 // живых в минуту за последнее окно наблюдения (обнова каждые 10с)
 }
 
 // dhResp — мини-парсер DH HTTP-over-UDP ответа облака.
@@ -247,8 +247,9 @@ type inflightChannel struct {
 	serial   string
 	aid      []byte // Identify этого запроса — нужен teardown после ack
 	deadline time.Time
-	extended bool // provisional (1xx) уже продлевал дедлайн
-	retries  int  // сколько ретраев уже потрачено на этот серийник
+	extended bool      // provisional (1xx) уже продлевал дедлайн
+	retries  int       // сколько ретраев уже потрачено на этот серийник
+	sentAt   time.Time // для RTT-метрики губернатора
 }
 
 // graveEntry — запрос, чей дедлайн истёк: вердикт отложен до ACK_GRACE,
@@ -371,10 +372,11 @@ func (p *channelPipeline) send(serial string) bool {
 	aid := randomAID()
 	if !p.write("DHPOST", fmt.Sprintf("/device/%s/p2p-channel", serial), p2pChannelBody(p.lport, aid), cseq) {
 		protolog("× %s send fail (socket write, cseq=%d)", serial, cseq)
+		govRecordErr()
 		return false
 	}
 	protolog("> DHPOST /device/%s/p2p-channel cseq=%d", serial, cseq)
-	p.inflight[cseq] = &inflightChannel{serial: serial, aid: aid, deadline: time.Now().Add(p.timeout)}
+	p.inflight[cseq] = &inflightChannel{serial: serial, aid: aid, deadline: time.Now().Add(p.timeout), sentAt: time.Now()}
 	p.sent++
 	return true
 }
@@ -416,6 +418,7 @@ func (p *channelPipeline) expire(stats *ScanStats) {
 		if now.After(ir.deadline) {
 			delete(p.inflight, c)
 			p.expiredCycle++
+			govRecordTO()
 			p.markChecked(ir.serial, stats)
 			p.graveyard[c] = &graveEntry{serial: ir.serial, aid: ir.aid, retries: ir.retries, deadline: now.Add(p.graceTTL)}
 		}
@@ -442,11 +445,12 @@ func (p *channelPipeline) sendRetry(g *graveEntry, stats *ScanStats) {
 	cseq := atomic.AddInt64(&cseqCounter, 1)
 	aid := randomAID()
 	if !p.write("DHPOST", fmt.Sprintf("/device/%s/p2p-channel", g.serial), p2pChannelBody(p.lport, aid), cseq) {
+		govRecordErr()
 		p.sendFail(g.serial, stats)
 		return
 	}
 	protolog("~ %s retry %d/%d cseq=%d", g.serial, g.retries+1, CHANNEL_RETRIES, cseq)
-	p.inflight[cseq] = &inflightChannel{serial: g.serial, aid: aid, retries: g.retries + 1, deadline: time.Now().Add(p.timeout)}
+	p.inflight[cseq] = &inflightChannel{serial: g.serial, aid: aid, retries: g.retries + 1, deadline: time.Now().Add(p.timeout), sentAt: time.Now()}
 	p.sent++
 }
 
@@ -466,6 +470,9 @@ func (p *channelPipeline) resolve(r dhResp, aliveCh chan<- string, stats *ScanSt
 		delete(p.inflight, r.CSeq)
 		p.resolvedCycle++
 		p.markChecked(ir.serial, stats)
+		if !ir.sentAt.IsZero() {
+			govRecordOK(time.Since(ir.sentAt))
+		}
 		if channelAckAlive(r) {
 			atomic.AddInt64(&stats.Alive, 1)
 			protolog("< %d cseq=%d %s (alive)", r.Code, r.CSeq, ir.serial)
@@ -893,7 +900,10 @@ func runPipe(ctx context.Context, stats *ScanStats, events chan<- string, outWri
 	// Один круг: воркеры на живых сокетах, alive сразу в выходной файл.
 	// Тишина облака отрабатывается ретраями внутри пайплайна
 	// (expire → sendRetry) — отдельных кругов нет.
-	limiter := newRateLimiter(MAX_RPS, BURST_LIMIT)
+	limiter := newRateLimiter(govStartPPS, BURST_LIMIT)
+	// губернатор AIMD: старт с безопасного минимума, дальше сам находит
+	// предел канала/роутера и держится у него
+	go governorLoop(ctx, limiter)
 	jobs := make(chan string, workers*10)
 	aliveCh := make(chan string, workers*10)
 
