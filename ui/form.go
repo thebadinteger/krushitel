@@ -116,9 +116,9 @@ func (f *formState) curIsBool() bool {
 // полях q — символ ввода, поэтому там выход только по ctrl+c.
 func (f *formState) helpLine() string {
 	if f.curIsBool() {
-		return tr("y/n — да/нет · enter — далее · q — выход · esc — в меню")
+		return tr("y/n - да/нет · enter - далее · q - выход · esc - в меню")
 	}
-	return tr("enter — далее · esc — в меню · ctrl+c — выход")
+	return tr("enter - далее · esc - в меню · ctrl+c - выход")
 }
 
 func (f *formState) update(m *model, msg tea.KeyMsg) bool {

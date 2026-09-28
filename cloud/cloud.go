@@ -16,7 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf16"
-	"unicode/utf8"
 )
 
 const (
@@ -28,37 +27,10 @@ const (
 	CloudUserKey  = "996103384cdf19179e19243e959bbf8b"
 )
 
-// LoadPrefixes читает файл префиксов. Строка длиной 10 символов — уже
-// префикс; строка длиннее (например, целый серийник 5L04507PAJBD5F6) —
-// берутся первые 10 символов (5L04507PAJ). Дедуп с сохранением порядка.
-// Понимает UTF-8 и UTF-16 файлы с BOM.
-func LoadPrefixes(path string) ([]string, error) {
-	raw, err := readFileBytes(path)
-	if err != nil {
-		return nil, fmt.Errorf("open: %w", err)
-	}
-	text := decodeText(raw)
-
-	seen := make(map[string]struct{})
-	var prefixes []string
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(strings.Trim(line, "\r\x00"))
-		// меряем рунами: кириллица в байтах длиннее, чем выглядит
-		if utf8.RuneCountInString(line) < 10 {
-			continue
-		}
-		p := string([]rune(line)[:10])
-		if _, ok := seen[p]; ok {
-			continue
-		}
-		seen[p] = struct{}{}
-		prefixes = append(prefixes, p)
-	}
-	if len(prefixes) == 0 {
-		return nil, fmt.Errorf("no 10-char prefixes found")
-	}
-	return prefixes, nil
-}
+// DecodeText — экспорт decodeText: UTF-8 или UTF-16 (BOM) → string.
+// Нужен пакетам, которые разбирают текст файла сами (exploit: микс
+// префиксов и серийников в одном входном файле).
+func DecodeText(raw []byte) string { return decodeText(raw) }
 
 // decodeText — файл в UTF-8 или UTF-16 (BOM).
 func decodeText(raw []byte) string {

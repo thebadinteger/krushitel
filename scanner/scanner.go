@@ -147,6 +147,35 @@ type ScanStats struct {
 	ReadValid      int64   // найдено валидных серийников
 	DedupResets    int64   // сколько раз сбросилось окно дедупа (см. DedupWindow)
 	AliveRate      float64 // живых в минуту за последнее окно наблюдения (обнова каждые 10с)
+
+	// телеметрия mem-скана префиксов (RunPrefixesMem): нужна движку
+	// двухфазного режима для чекпоинта (crashscan.json) и для UI.
+	Fed         int64        // atomic: скормлено пайплайну в этом прогоне (после resume-скипа)
+	PrefixTotal int64        // atomic: префиксов в прогоне
+	PrefixDone  int64        // atomic: префиксов добито
+	LastSerial  atomic.Value // string: последний скормленный серийник (обновляется раз в 4096 — без аллокационного шквала)
+}
+
+// LastSerialOf — чтение LastSerial без паники на пустом Value (для
+// чекпоинта двухфазного движка).
+func LastSerialOf(stats *ScanStats) string {
+	s, ok := stats.LastSerial.Load().(string)
+	if !ok {
+		return ""
+	}
+	return s
+}
+
+// CrashHook — вызывается при панике в горутинах пайплайна (воркер/писатель)
+// ДО re-panic: движок двухфазного режима успевает force-писать чекпоинт
+// скана (crashscan.json/txt). nil — просто re-panic как раньше.
+var CrashHook func(recovered any)
+
+// crashGuard — мостик recover'а в хук (nil-безопасно).
+func crashGuard(r any) {
+	if CrashHook != nil {
+		CrashHook(r)
+	}
 }
 
 // dhResp — мини-парсер DH HTTP-over-UDP ответа облака.
@@ -852,11 +881,13 @@ func openOutput(outputFile string, appendMode bool, stats *ScanStats) (*os.File,
 }
 
 // runPipe — общий движок скана: лимиты ОС, резолв облака, egress-сокеты,
-// воркеры, writer с seenAlive (каждый живой пишется один раз; seedAlive —
-// предзагруженные живые для resume), updater статистики. feed льёт серийники
-// в jobs (бэкпрешер полного канала — память плоская) и закрывает его.
+// воркеры, писатель с seenAlive (каждый живой отдаётся в sink один раз;
+// seedAlive — предзагруженные живые для resume), updater статистики.
+// sink — приёмник живых серийников (файловый writer или колбэк mem-скана;
+// сам отвечает за флеш/потокобезопасность). feed льёт серийники в jobs
+// (бэкпрешер полного канала — память плоская) и закрывает его.
 // Возвращает текст ошибки ("" = ок).
-func runPipe(ctx context.Context, stats *ScanStats, events chan<- string, outWriter *bufio.Writer, workers int, feed func(jobs chan string), seedAlive map[string]struct{}) string {
+func runPipe(ctx context.Context, stats *ScanStats, events chan<- string, sink func(string), workers int, feed func(jobs chan string), seedAlive map[string]struct{}) string {
 	// Лимиты ОС — сами, чтобы юзер не парился: на линуксе мягкий лимит fd
 	// поднимаем через Setrlimit, на винде берём безопасный кап.
 	lim := syslimits.Ensure()
@@ -912,6 +943,14 @@ func runPipe(ctx context.Context, stats *ScanStats, events chan<- string, outWri
 		rwg.Add(1)
 		go func(c *net.UDPConn) {
 			defer rwg.Done()
+			// Паника воркера = смерть процесса, но ДО неё движок двухфазного
+			// режима успевает дампить чекпоинт скана (см. CrashHook).
+			defer func() {
+				if r := recover(); r != nil {
+					crashGuard(r)
+					panic(r)
+				}
+			}()
 			scanWorker(ctx, c, jobs, aliveCh, stats, ACK_TIMEOUT, limiter)
 		}(conn)
 	}
@@ -919,24 +958,28 @@ func runPipe(ctx context.Context, stats *ScanStats, events chan<- string, outWri
 	var writeWg sync.WaitGroup
 	writeWg.Add(1)
 	// seenAlive давит повторы на выходе: дубли через границу дедуп-окна
-	// могут уйти в повторный проб, но в файл каждый живой пишется один раз.
-	// Живых на порядки меньше, чем вход, — мапа крошечная.
+	// могут уйти в повторный проб, но в приёмник каждый живой попадает
+	// один раз. Живых на порядки меньше входа — мапа крошечная.
 	seenAlive := make(map[string]struct{}, len(seedAlive))
 	for s := range seedAlive {
 		seenAlive[s] = struct{}{}
 	}
 	go func() {
 		defer writeWg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				crashGuard(r)
+				panic(r)
+			}
+		}()
 		for s := range aliveCh {
 			if _, ok := seenAlive[s]; ok {
 				continue
 			}
 			seenAlive[s] = struct{}{}
-			outWriter.WriteString(s + "\n")
-			outWriter.Flush() // Пишем сразу в файл, а не в память
+			sink(s)
 			emitEvent(events, "[VALID] "+s)
 		}
-		outWriter.Flush()
 	}()
 
 	// Stats updater loop стартует ДО фида (иначе скорость мёртвая всё время
@@ -981,7 +1024,6 @@ func runPipe(ctx context.Context, stats *ScanStats, events chan<- string, outWri
 	// Круг один: ретраи молчунов — внутри пайплайна, второго круга нет.
 	// Хроника молчит после всех ретраев — это оффлайн, а не медленный ack.
 	close(updStop)
-	outWriter.Flush()
 	return ""
 }
 
@@ -1021,13 +1063,17 @@ func RunScanner(ctx context.Context, inputFile, outputFile string, appendMode bo
 	// (бэкпрешер полного канала тормозит ридер — RAM плоская), jobs
 	// закрывается концом входа. Ретраи молчунов — внутри пайплайна,
 	// второго круга нет.
+	sink := func(s string) {
+		outWriter.WriteString(s + "\n")
+		outWriter.Flush() // пишем сразу в файл, а не в память
+	}
 	var emitted int64
 	var feedErr string
 	feed := func(jobs chan string) {
 		emitted, feedErr = streamSerials(ctx, f, stats, events, jobs, DedupWindow)
 		f.Close()
 	}
-	if perr := runPipe(ctx, stats, events, outWriter, workers, feed, nil); perr != "" {
+	if perr := runPipe(ctx, stats, events, sink, workers, feed, nil); perr != "" {
 		stats.ErrorMsg = perr
 		return
 	}

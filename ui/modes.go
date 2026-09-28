@@ -6,7 +6,6 @@ package ui
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"krushitel/cloud"
 	"krushitel/dhip"
@@ -26,13 +24,15 @@ import (
 	"krushitel/xmlde"
 )
 
-// ── режим 1: крушим ──────────────────────────────────────────────────
+// ── режим 1: крушим (двухфазный: скан префиксов в RAM → крушим найденных) ──
 
 func exploitForm() *formState {
 	f := newFormState(tr("нужна кое какая информация"), func(m *model) {
 		startExploitRun(m)
 	})
-	f.addStr(tr("файл с серийниками (targets.txt)"), true, true)
+	// вход двухфазного режима: префикс (>=10 симв.), файл префиксов,
+	// файл серийников или инлайн через запятую — разбор в LoadTargetInput
+	f.addStr(tr("префикс или файл (префиксы/серийники)"), true, false)
 	if cfg.LastInput != "" {
 		f.setDefault(cfg.LastInput) // сохранение последнего захода
 	}
@@ -64,84 +64,48 @@ func startExploitRun(m *model) {
 	cfg.Preflight = m.form.fields[5].boolVal
 	saveSettings()
 
-	serials, err := exploit.LoadSerials(inFile)
+	prefixes, direct, err := exploit.LoadTargetInput(inFile)
 	if err != nil {
-		showMsg(m, tr("скан sn"), red("[-] "+tr("ошибка открытия выходного файла: ")+err.Error()))
-		return
-	}
-	if len(serials) == 0 {
-		showMsg(m, tr("крушим"), red("[-] "+tr("Файл пуст")))
+		showMsg(m, tr("ломаем"), red("[-] "+err.Error()))
 		return
 	}
 
 	// Resume: в папке остался живой session-маркер (краш/esc прошлого
-	// прогона) и ведомость done.txt. Предлагаем продолжить с оставшихся;
-	// отказ — прогон заново (done.txt перезапишется движком).
-	if sess := readExploitSession(outDir); sess != nil {
-		done := readDoneSet(filepath.Join(outDir, exploit.DoneFile))
+	// прогона) и ведомость done.txt. Предлагаем продолжить; отказ —
+	// прогон заново (done.txt перезапишется движком). Скан-фаза при
+	// этом всегда доезжает с чекпоинта/alive.txt — это не «заново».
+	if sess := exploit.ReadSession(outDir); sess != nil {
+		done := exploit.ReadDoneSet(filepath.Join(outDir, exploit.DoneFile))
 		if len(done) > 0 {
-			remaining := make([]string, 0, len(serials))
-			for _, s := range serials {
-				if _, ok := done[s]; !ok {
-					remaining = append(remaining, s)
+			var question string
+			if len(prefixes) > 0 {
+				// серийники станут известны после скана — «осталось» не посчитать
+				question = fmt.Sprintf(tr("прерванный прогон (%s): отработано %d. продолжить? (нет = заново)"),
+					sess.InFile, len(done))
+			} else {
+				remaining := make([]string, 0, len(direct))
+				for _, s := range direct {
+					if _, ok := done[s]; !ok {
+						remaining = append(remaining, s)
+					}
 				}
+				question = fmt.Sprintf(tr("прерванный прогон (%s): отработано %d, осталось %d. продолжить с оставшихся? (нет = заново)"),
+					sess.InFile, len(done), len(remaining))
 			}
-			confirm := newFormState(tr("крушим"), func(m *model) {
-				if m.form.fields[0].boolVal {
-					launchExploitRun(m, inFile, outDir, threads, remaining, true, false)
-				} else {
-					launchExploitRun(m, inFile, outDir, threads, serials, false, false)
-				}
+			confirm := newFormState(tr("ломаем"), func(m *model) {
+				launchExploitRun(m, inFile, outDir, threads, prefixes, direct, m.form.fields[0].boolVal, false)
 			})
-			confirm.addBool(fmt.Sprintf(tr("прерванный прогон (%s): отработано %d, осталось %d. продолжить с оставшихся? (нет = заново)"),
-				sess.InFile, len(done), len(remaining)), true)
+			confirm.addBool(question, true)
 			confirm.cur = 0
 			m.form = confirm
 			m.form.focus()
 			return
 		}
 	}
-	launchExploitRun(m, inFile, outDir, threads, serials, false, false)
+	launchExploitRun(m, inFile, outDir, threads, prefixes, direct, false, false)
 }
 
-// exploitSession — содержимое krushitel_session.json: маркер живого
-// прогона в папке результатов. Пишется при старте, движок удаляет при
-// чистом завершении (остался после краша = есть что продолжать).
-type exploitSession struct {
-	InFile  string `json:"in_file"`
-	Threads int    `json:"threads"`
-	Total   int    `json:"total"`
-	Started string `json:"started"`
-}
-
-func readExploitSession(outDir string) *exploitSession {
-	data, err := os.ReadFile(filepath.Join(outDir, exploit.SessionFile))
-	if err != nil {
-		return nil
-	}
-	var s exploitSession
-	if json.Unmarshal(data, &s) != nil || s.InFile == "" {
-		return nil
-	}
-	return &s
-}
-
-// readDoneSet — множество отработанных серийников из ведомости.
-func readDoneSet(path string) map[string]struct{} {
-	out := make(map[string]struct{})
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return out
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if s := ironscan.SanitizeSerial(line); s != "" {
-			out[s] = struct{}{}
-		}
-	}
-	return out
-}
-
-func launchExploitRun(m *model, inFile, outDir string, threads int, serials []string, resume, triedSudo bool) {
+func launchExploitRun(m *model, inFile, outDir string, threads int, prefixes, direct []string, resume, triedSudo bool) {
 	// Префлайт ДО переворота в stRun: папка результатов (+ xml-подпапка,
 	// если импорт включён — это ровно тот кейс «включил в настройках,
 	// а xml нет»). Фатал → красный диалог (sudo / проводник).
@@ -151,19 +115,27 @@ func launchExploitRun(m *model, inFile, outDir string, threads int, serials []st
 	}
 	for _, d := range probeDirs {
 		if err := preflightDir(d); err != nil {
-			fatalFileDialog(m, tr("крушим)"), err, d, triedSudo, true,
-				func() { launchExploitRun(m, inFile, outDir, threads, serials, resume, true) },
+			fatalFileDialog(m, tr("ломаем)"), err, d, triedSudo, true,
+				func() { launchExploitRun(m, inFile, outDir, threads, prefixes, direct, resume, true) },
 				func(newPath string) {
-					launchExploitRun(m, inFile, newPath, threads, serials, false, false)
+					launchExploitRun(m, inFile, newPath, threads, prefixes, direct, false, false)
 				})
 			return
 		}
 	}
-	stats := &exploit.Stats{}
+	// двухфазная статистика: скан-фаза + бой
+	tp := &exploit.TwoPhaseStats{
+		Scan:        &scanner.ScanStats{},
+		Exp:         &exploit.Stats{},
+		PrefixCount: len(prefixes),
+		DirectCount: len(direct),
+		ScanTotal:   int64(len(prefixes)) * scanner.SuffixCombos,
+	}
 	// на экране прогона — боевой заголовок, «need some info» остаётся
 	// только на форме ввода
-	r := newRunState(runExploit, tr("крушим)"))
-	r.exp = stats
+	r := newRunState(runExploit, tr("ломаем)"))
+	r.exp = tp
+	r.saveDir = outDir // шапка прогона: результаты пишутся сюда
 	// лог прогона — в папку результатов (append между прогонами)
 	r.openLog(filepath.Join(outDir, "log.txt"))
 	// Глобальный лимит одновременных P2P-init'ов: oluhradar держит
@@ -177,16 +149,15 @@ func launchExploitRun(m *model, inFile, outDir string, threads int, serials []st
 	m.state = stRun
 
 	// session-маркер: живёт до чистого завершения прогона (движок
-	// удалит), краш/esc — файл остаётся, следующий старт предложит resume
-	sess := exploitSession{
-		InFile:  inFile,
-		Threads: threads,
-		Total:   len(serials),
-		Started: time.Now().Format("02.01.2006 15:04:05"),
-	}
-	if b, err := json.Marshal(sess); err == nil {
-		_ = os.WriteFile(filepath.Join(outDir, exploit.SessionFile), b, 0644)
-	}
+	// удалит), краш/esc — файл остаётся, следующий запуск предложит resume.
+	// Prefixes — по ним resume узнаёт свои alive.txt/crashscan.json.
+	exploit.WriteSession(outDir, exploit.SessionInfo{
+		InFile:   inFile,
+		Threads:  threads,
+		Total:    len(prefixes) + len(direct),
+		Started:  time.Now().Format("02.01.2006 15:04:05"),
+		Prefixes: prefixes,
+	})
 
 	// Логирование: пишем АБСОЛЮТНО ВСЁ сетевое взаимодействие в log.txt
 	logLine := func(line string) {
@@ -230,7 +201,7 @@ func launchExploitRun(m *model, inFile, outDir string, threads int, serials []st
 			dhip.LogHook = nil
 			exploit.LogHook = nil
 		}()
-		exploit.RunExploit(ctx, serials, outDir, threads, opts, stats, r.eventsCh)
+		exploit.RunPrefixExploit(ctx, prefixes, direct, outDir, threads, opts, tp, r.eventsCh)
 	}()
 }
 
@@ -292,160 +263,7 @@ func launchTitlesRun(m *model, inFile string, threads int, cams []exploit.CamCre
 	go exploit.RunTitles(ctx, cams, threads, opts, stats, r.eventsCh)
 }
 
-// ── режим 2: скан префиксов (без генерации файлов) ───────────────────
-// Префиксы из файла разворачиваются в 00000..FFFFF на лету окнами по
-// свободной RAM и льются straight в скан-пайплайн. Промежуточных
-// многогигабайтных файлов нет.
-
-func prefixSingleScanForm() *formState {
-	f := newFormState(tr("скан одного префикса"), func(m *model) {
-		startPrefixSingleScanRun(m)
-	})
-	f.addStr(tr("префикс (10 символов)"), true, false)
-	f.fields[0].validate = func(s string) string {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return tr("обязательное поле")
-		}
-		if utf8.RuneCountInString(s) < 10 {
-			return tr("префикс должен быть не менее 10 символов")
-		}
-		return ""
-	}
-	f.addStr(tr("выходной файл (только онлайн)"), true, false)
-	f.addInt(tr("потоков"), 30)
-	return f
-}
-
-func startPrefixSingleScanRun(m *model) {
-	prefixRaw := strings.TrimSpace(m.form.fields[0].strVal)
-	if utf8.RuneCountInString(prefixRaw) < 10 {
-		showMsg(m, tr("скан префикса"), red("[-] "+tr("префикс должен быть не менее 10 символов")))
-		return
-	}
-	prefix := strings.ToUpper(string([]rune(prefixRaw)[:10]))
-	outFile := m.form.fields[1].strVal
-	threads := m.threadsVal(2)
-
-	startPrefixRunCommon(m, []string{prefix}, outFile, threads, tr("скан префикса"))
-}
-
-func prefixFileScanForm() *formState {
-	f := newFormState(tr("скан файла с префиксами"), func(m *model) {
-		startPrefixFileScanRun(m)
-	})
-	f.addStr(tr("файл с префиксами (10 символов)"), true, true)
-	f.addStr(tr("выходной файл (только онлайн)"), true, false)
-	f.addInt(tr("потоков"), 30)
-	return f
-}
-
-func startPrefixFileScanRun(m *model) {
-	prefixFile := m.form.fields[0].strVal
-	outFile := m.form.fields[1].strVal
-	threads := m.threadsVal(2)
-
-	prefixes, err := cloud.LoadPrefixes(prefixFile)
-	if err != nil || len(prefixes) == 0 {
-		msg := tr("нет префиксов в файле (нужно >= 10 символов, берутся первые 10)")
-		if err != nil {
-			msg = err.Error()
-		}
-		showMsg(m, tr("скан префиксов"), red("[-] "+msg))
-		return
-	}
-	startPrefixRunCommon(m, prefixes, outFile, threads, tr("скан префиксов"))
-}
-
-func prefixScanForm() *formState {
-	return prefixFileScanForm()
-}
-
-func startPrefixScanRun(m *model) {
-	startPrefixFileScanRun(m)
-}
-
-func startPrefixRunCommon(m *model, prefixes []string, outFile string, threads int, title string) {
-	// Недобитый прогон? Один вопрос — продолжить с чекпоинта.
-	// «Нет» = обычный путь (append-вопрос + старт с нуля).
-	if resumeInfo, ok := scanner.CheckPrefixResume(outFile); ok {
-		confirm := newFormState(title, func(m *model) {
-			if m.form.fields[0].boolVal {
-				launchPrefixScanRun(m, prefixes, outFile, threads, false, true, false, title)
-			} else {
-				startPrefixScanFresh(m, prefixes, outFile, threads, title)
-			}
-		})
-		confirm.addBool(resumeInfo, false)
-		confirm.cur = 0
-		m.form = confirm
-		m.form.focus()
-		return
-	}
-	startPrefixScanFresh(m, prefixes, outFile, threads, title)
-}
-
-// startPrefixScanFresh — старт с нуля: append-вопрос как в обычном скане,
-// если выходной файл уже с результатами.
-func startPrefixScanFresh(m *model, prefixes []string, outFile string, threads int, title string) {
-	if st, err := os.Stat(outFile); err == nil && st.Size() > 0 {
-		lines := countLines(outFile)
-		confirm := newFormState(title, func(m *model) {
-			launchPrefixScanRun(m, prefixes, outFile, threads, m.form.fields[0].boolVal, false, false, title)
-		})
-		confirm.addBool(
-			fmt.Sprintf(tr("файл %s уже есть (%d строк). дописать в конец? (нет = перезаписать)"), outFile, lines),
-			false)
-		confirm.cur = 0
-		m.form = confirm
-		m.form.focus()
-		return
-	}
-	launchPrefixScanRun(m, prefixes, outFile, threads, false, false, false, title)
-}
-
-func launchPrefixScanRun(m *model, prefixes []string, outFile string, threads int, appendMode, resume, triedSudo bool, title string) {
-	// Префлайт ДО переворота в stRun: сам выходной файл тоже проверяем —
-	// иначе «outFile существует как папка» падает уже в движке плоской строкой.
-	if err := preflightOutFile(outFile); err != nil {
-		fatalFileDialog(m, title, err, filepath.Dir(outFile), triedSudo, false,
-			func() { launchPrefixScanRun(m, prefixes, outFile, threads, appendMode, resume, true, title) },
-			func(newPath string) {
-				launchPrefixScanRun(m, prefixes, newPath, threads, appendMode, resume, false, title)
-			})
-		return
-	}
-	stats := &scanner.ScanStats{}
-	r := newRunState(runCheck, title)
-	r.chk = stats
-	// лог скана — рядом с выходным файлом: alive.txt → alive.log
-	r.openLog(strings.TrimSuffix(outFile, filepath.Ext(outFile)) + ".log")
-	ctx, cancel := context.WithCancel(context.Background())
-	r.cancel = cancel
-	m.form = nil
-	m.run = r
-	m.state = stRun
-
-	// Протокольные дампы сканера (dh-fwd-стайл) — как в режиме крушителя.
-	logLine := func(line string) {
-		r.writeLog(line)
-		if cfg.Debug {
-			select {
-			case r.eventsCh <- "[dbg] " + line:
-			default:
-			}
-		}
-	}
-	scanner.LogHook = logLine
-	scanner.Debug = cfg.Debug
-
-	go func() {
-		defer func() { scanner.LogHook = nil }()
-		scanner.RunPrefixes(ctx, prefixes, outFile, appendMode, resume, threads, stats, r.eventsCh)
-	}()
-}
-
-// ── режим 3: smartpss ────────────────────────────────────────────────
+// ── режим 3: smartpss (бывший 4) ────────────────────────────────────────────────
 
 func xmlXMLForm() *formState {
 	f := newFormState(tr("xml → креды"), func(m *model) {

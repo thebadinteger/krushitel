@@ -44,14 +44,13 @@ type tickMsg time.Time
 type crashTestMsg struct{}
 
 type model struct {
-	w, h           int
-	state          sessionState
-	prevMenu       sessionState // откуда открыли форму (для возврата по esc)
-	cursor         int          // меню
-	xmlCur         int          // подменю режима 4
-	prefixExpanded bool         // раскрыт ли пункт 3 (бургер-подменю)
-	setCur         int          // настройки
-	greetCur       int          // приветствие: выбор языка
+	w, h     int
+	state    sessionState
+	prevMenu sessionState // откуда открыли форму (для возврата по esc)
+	cursor   int          // меню
+	xmlCur   int          // подменю режима 3
+	setCur   int          // настройки
+	greetCur int          // приветствие: выбор языка
 
 	form     *formState
 	run      *runState
@@ -294,9 +293,6 @@ type mainMenuItemKind int
 const (
 	menuItemExploit mainMenuItemKind = iota
 	menuItemTitles
-	menuItemPrefixParent
-	menuItemPrefixSingle
-	menuItemPrefixFile
 	menuItemXML
 	menuItemFindPrefix
 	menuItemSettings
@@ -306,108 +302,28 @@ type mainMenuItem struct {
 	kind  mainMenuItemKind
 	num   string
 	label string
-	isSub bool
 }
 
 func (m model) mainMenuItems() []mainMenuItem {
-	items := []mainMenuItem{
-		{kind: menuItemExploit, num: "1", label: "крушим)"},
+	return []mainMenuItem{
+		{kind: menuItemExploit, num: "1", label: "ломать камеры"},
 		{kind: menuItemTitles, num: "2", label: "OSDChanger"},
-		{kind: menuItemPrefixParent, num: "3", label: "сканим префиксы (без генерации)"},
+		{kind: menuItemXML, num: "3", label: "расшифровать .xml от smartpss"},
+		{kind: menuItemFindPrefix, num: "4", label: "искать префиксы с списка IP"},
+		{kind: menuItemSettings, num: "5", label: "настройки"},
 	}
-	if m.prefixExpanded {
-		items = append(items,
-			mainMenuItem{kind: menuItemPrefixSingle, label: tr("скан одного префикса"), isSub: true},
-			mainMenuItem{kind: menuItemPrefixFile, label: tr("скан файла с префиксами"), isSub: true},
-		)
-	}
-	items = append(items,
-		mainMenuItem{kind: menuItemXML, num: "4", label: "расшифровываем .xml от smartpss"},
-		mainMenuItem{kind: menuItemFindPrefix, num: "5", label: "ищем префиксы"},
-		mainMenuItem{kind: menuItemSettings, num: "6", label: "настройки"},
-	)
-	return items
 }
 
 func (m model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	items := m.mainMenuItems()
 
-	if m.prefixExpanded {
-		// Подменю активно: навигация и выбор ТОЛЬКО внутри бургер-меню (2..4),
-		// все остальные пункты серые и недоступны.
-		switch msg.Type {
-		case tea.KeyUp, tea.KeyShiftTab:
-			m.cursor--
-			if m.cursor < 2 {
-				m.cursor = 4
-			}
-		case tea.KeyDown, tea.KeyTab:
-			m.cursor++
-			if m.cursor > 4 {
-				m.cursor = 2
-			}
-		case tea.KeyRight:
-			if m.cursor == 2 {
-				m.cursor = 3
-			}
-		case tea.KeyLeft:
-			if m.cursor > 2 {
-				m.cursor = 2
-			} else {
-				m.prefixExpanded = false
-			}
-		case tea.KeyEsc:
-			m.prefixExpanded = false
-			m.cursor = 2
-			return m, nil
-		case tea.KeyEnter:
-			if m.cursor == 2 {
-				m.prefixExpanded = false
-				return m, nil
-			}
-			if m.cursor < len(items) {
-				return m.selectMenuItem(items[m.cursor].kind)
-			}
-		case tea.KeyRunes:
-			r := msg.Runes[0]
-			if r == 'q' || r == 'Q' {
-				m.quitting = true
-				return m, tea.Quit
-			}
-			switch r {
-			case '1':
-				m.cursor = 3
-				return m.selectMenuItem(menuItemPrefixSingle)
-			case '2':
-				m.cursor = 4
-				return m.selectMenuItem(menuItemPrefixFile)
-			case '3':
-				m.prefixExpanded = false
-				m.cursor = 2
-				return m, nil
-			}
-		}
-		return m, nil
-	}
-
-	// Обычный режим (подменю закрыто)
 	switch msg.Type {
 	case tea.KeyUp, tea.KeyShiftTab:
 		m.cursor = (m.cursor - 1 + len(items)) % len(items)
 	case tea.KeyDown, tea.KeyTab:
 		m.cursor = (m.cursor + 1) % len(items)
-	case tea.KeyRight:
-		if m.cursor < len(items) && items[m.cursor].kind == menuItemPrefixParent {
-			m.prefixExpanded = true
-			m.cursor = 3
-		}
 	case tea.KeyEnter:
 		if m.cursor < len(items) {
-			if items[m.cursor].kind == menuItemPrefixParent {
-				m.prefixExpanded = true
-				m.cursor = 3
-				return m, nil
-			}
 			return m.selectMenuItem(items[m.cursor].kind)
 		}
 	case tea.KeyRunes:
@@ -416,15 +332,9 @@ func (m model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
-		if r >= '1' && r <= '6' {
-			num := string(r)
-			if num == "3" {
-				m.prefixExpanded = true
-				m.cursor = 3
-				return m, nil
-			}
+		if r >= '1' && r <= '5' {
 			for i, item := range items {
-				if item.num == num {
+				if item.num == string(r) {
 					m.cursor = i
 					return m.selectMenuItem(item.kind)
 				}
@@ -442,20 +352,6 @@ func (m model) selectMenuItem(kind mainMenuItemKind) (tea.Model, tea.Cmd) {
 		m.prevMenu = stMenu
 	case menuItemTitles:
 		m.form = titlesForm()
-		m.state = stForm
-		m.prevMenu = stMenu
-	case menuItemPrefixParent:
-		m.prefixExpanded = !m.prefixExpanded
-		if !m.prefixExpanded && m.cursor > 2 {
-			m.cursor = 2
-		}
-		return m, nil
-	case menuItemPrefixSingle:
-		m.form = prefixSingleScanForm()
-		m.state = stForm
-		m.prevMenu = stMenu
-	case menuItemPrefixFile:
-		m.form = prefixFileScanForm()
 		m.state = stForm
 		m.prevMenu = stMenu
 	case menuItemXML:
@@ -531,9 +427,9 @@ func (m model) updateRun(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // ── подменю режима 4 ─────────────────────────────────────────────────
 
 var xmlMenuOptions = []string{
-	"расшифровать XML (SmartPSS export → креды)",
+	"расшифровать XML файл",
 	"расшифровать blob (base64 → пароль)",
-	"собрать xml (креды txt → SmartPSS импорт)",
+	"собрать xml с results.csv",
 	"назад",
 }
 
@@ -907,12 +803,9 @@ func (m model) View() string {
 	var content, help string
 	switch m.state {
 	case stGreet:
-		content, help = m.greetView(), tr("↑↓ навигация  ·  enter / 0-9 — выбор  ·  q — выход")
+		content, help = m.greetView(), tr("↑↓ навигация  ·  enter / 0-9 - выбор  ·  q - выход")
 	case stMenu:
-		help = tr("↑↓ навигация  ·  enter / 0-9 — выбор  ·  q — выход")
-		if m.prefixExpanded {
-			help = tr("↑↓ навигация  ·  enter / 1-2 — выбор  ·  esc — закрыть  ·  q — выход")
-		}
+		help = tr("↑↓ навигация  ·  enter / 0-9 - выбор  ·  q - выход")
 		content = m.menuView()
 	case stForm:
 		content, help = m.form.view(), m.form.helpLine()
@@ -924,15 +817,15 @@ func (m model) View() string {
 			help = tr("esc/b — в меню  ·  q — выход")
 		}
 	case stXMLMenu:
-		content, help = m.xmlMenuView(), tr("↑↓ навигация  ·  enter / 0-9 — выбор  ·  esc — назад  ·  q — выход")
+		content, help = m.xmlMenuView(), tr("↑↓ навигация  ·  enter / 0-9 - выбор  ·  esc - назад  ·  q - выход")
 	case stMsg:
 		content = m.msgView()
 	case stSettings:
-		content, help = m.settingsView(), tr("↑↓ навигация  ·  enter/пробел — переключить  ·  esc — назад  ·  q — выход")
+		content, help = m.settingsView(), tr("↑↓ навигация  ·  enter/пробел - переключить  ·  esc — назад  ·  q - выход")
 	case stTitleEdit:
-		content, help = m.titleEditView(), tr("enter — сохранить  ·  esc — назад  ·  ctrl+c — выход")
+		content, help = m.titleEditView(), tr("enter - сохранить  ·  esc - назад  ·  ctrl+c - выход")
 	case stDummyEdit:
-		content, help = m.dummyEditView(), tr("enter — сохранить  ·  esc — назад  ·  ctrl+c — выход")
+		content, help = m.dummyEditView(), tr("enter - сохранить  ·  esc - назад  ·  ctrl+c - выход")
 	case stUpdate:
 		content, help = m.updatePromptView(), ""
 	case stUpdating:
@@ -947,34 +840,15 @@ func (m model) menuView() string {
 	// шапка — на 4 пустые строки ниже баннера (просили опустить)
 	sb.WriteString(strings.Repeat("\n", 4))
 	// пункты меню — одна пустая строка после шапки
-	sb.WriteString(panelS(tr("что сегодня делаем?")) + "\n\n")
+	sb.WriteString(panelS(tr("меню")) + "\n\n")
 
 	items := m.mainMenuItems()
 	var rows []string
 	for i, item := range items {
-		if item.isSub {
-			if i == m.cursor {
-				rows = append(rows, "       "+styleGreen.Render("▶")+"  "+styleBold.Render("└ ")+styleBold.Render(item.label))
-			} else {
-				rows = append(rows, "          "+styleDim.Render("└ ")+item.label)
-			}
-		} else if m.prefixExpanded {
-			if item.kind == menuItemPrefixParent {
-				if i == m.cursor {
-					rows = append(rows, styleGreen.Render("▶")+"  "+styleBold.Render(item.num)+"  "+styleBold.Render(tr(item.label)))
-				} else {
-					rows = append(rows, "   "+styleBold.Render(item.num)+"  "+styleBold.Render(tr(item.label)))
-				}
-			} else {
-				// Все остальные пункты становятся серыми, пока открыто бургер-подменю
-				rows = append(rows, "   "+styleDim.Render(item.num+"  "+tr(item.label)))
-			}
+		if i == m.cursor {
+			rows = append(rows, styleGreen.Render("▶")+"  "+styleBold.Render(item.num)+"  "+styleBold.Render(tr(item.label)))
 		} else {
-			if i == m.cursor {
-				rows = append(rows, styleGreen.Render("▶")+"  "+styleBold.Render(item.num)+"  "+styleBold.Render(tr(item.label)))
-			} else {
-				rows = append(rows, "   "+styleDim.Render(item.num)+"  "+tr(item.label))
-			}
+			rows = append(rows, "   "+styleDim.Render(item.num+"  "+tr(item.label)))
 		}
 	}
 	sb.WriteString(centerBlock(rows))
@@ -1149,7 +1023,7 @@ func (m model) dummyEditView() string {
 	var sb strings.Builder
 	sb.WriteString(bannerBlock())
 	sb.WriteString(strings.Repeat("\n", 4))
-	sb.WriteString(panelS(tr("dummy-креды")) + "\n\n")
+	sb.WriteString(panelS(tr("креды юзера")) + "\n\n")
 	sb.WriteString(centerLine(cyan(tr("новый юзер в формате login:passwd:"))) + "\n")
 	sb.WriteString(centerLine(m.dummyInput.View()) + "\n")
 	sb.WriteString("\n" + centerLine(dim(tr("по дефолту/by default: krushitel:TancuiPantera1337"))) + "\n")

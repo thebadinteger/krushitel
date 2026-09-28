@@ -49,15 +49,24 @@ func ParseCreds(data []byte) ([]Cred, int) {
 				dom = dom[:j] // порт не нужен — DeviceRow пишет 37777
 			}
 		} else {
-			// SN<sep>login:pass
+			// SN<sep>login:pass  |  csv: sn,login,password,model,method
 			i := strings.IndexAny(line, ",;\t ")
 			if i < 0 {
 				skipped++
 				continue
 			}
 			dom = strings.TrimSpace(line[:i])
+			rest := strings.TrimSpace(line[i+1:])
 			var ok bool
-			user, pass, ok = splitUserPass(strings.TrimSpace(line[i+1:]))
+			user, pass, ok = splitUserPass(rest)
+			if !ok && strings.IndexByte(rest, ':') < 0 && strings.Contains(rest, ",") {
+				// csv от exploit (results.csv): ':' нет — login и password
+				// через запятую, хвост model/method игнорируем
+				parts := strings.Split(rest, ",")
+				if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
+					user, pass, ok = parts[0], parts[1], true
+				}
+			}
 			if !ok {
 				skipped++
 				continue

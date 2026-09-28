@@ -176,11 +176,11 @@ func (p *InProcessProvider) Acquire(ctx context.Context) (Binding, error) {
 				if p.OnDead != nil {
 					p.OnDead(serial, "нужны креды (type 1)")
 				}
-				p.logf(i18n.Tr("%s — устройство требует tunnel-auth (type 1) — без кредов туннель невозможен, из очереди исключён"), serial)
+				p.logf(i18n.Tr("%s — устройство требует Type 1 auth"), serial)
 			} else {
 				p.attempts[serial]++
 				if p.attempts[serial] >= maxAcquireAttempts {
-					p.logf(i18n.Tr("%s — исчерпан (%d туннель-подъёма за прогон) — из очереди исключён окончательно"), serial, p.attempts[serial])
+					p.logf(i18n.Tr("%s — исчерпан (%d туннель-подъёма за прогон)"), serial, p.attempts[serial])
 					if p.OnDead != nil {
 						p.OnDead(serial, fmt.Sprintf("туннель: %v", err))
 					}

@@ -45,3 +45,18 @@ dahua_help_console.txt
 config_dump_1337.json
 __pycache__/
 tools/p2pwn/
+
+# Dumps, scans and test folders
+*.zip
+*.state
+*.progress
+crashscan.json
+crashscan.txt
+ips.txt
+nig.txt
+uzhgorod*.txt
+13371338/
+mukachevo*/
+tailtest/
+testingniggers/
+uzhhorod*/

@@ -300,7 +300,7 @@ func StartSupervisedWithAuth(ctx context.Context, serial, user, pass string, spe
 			return nil, err
 		}
 		if attempt > 1 && onEvent != nil {
-			onEvent(fmt.Sprintf(i18n.Tr("туннель: перезапуск демона (попытка %d)"), attempt))
+			onEvent(fmt.Sprintf(i18n.Tr("туннель: переподключение (попытка %d)"), attempt))
 		}
 		f, err := StartWithAuthContext(ctx, serial, user, pass, specs)
 		if err == nil {

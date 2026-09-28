@@ -45,8 +45,10 @@ type runState struct {
 	events   []string
 	eventsCh chan string
 
-	// exploit (krushitel/exploit)
-	exp *exploit.Stats
+	// exploit (krushitel/exploit) — двухфазный прогон: скан → бой
+	exp *exploit.TwoPhaseStats
+	// saveDir — папка результатов (шапка прогона: «результаты: //dir»)
+	saveDir string
 	// check (krushitel/scanner)
 	chk *scanner.ScanStats
 	// titles (krushitel/exploit, подменю «титры по списку»)
@@ -231,11 +233,13 @@ func (r *runState) drain() {
 func (r *runState) finished() bool {
 	switch r.mode {
 	case runExploit:
-		// прогон завершён, только когда и движок дошёл до конца, И
+		// прогон завершён, только когда бой (фаза 2) дошёл до конца, И
 		// хвост extras (титры/снапы) догорел: ранний esc убивает
-		// недоделанные снапы, «готово» не должно врать
-		return r.exp != nil && r.exp.Done &&
-			atomic.LoadInt64(&r.exp.ExtrasInFlight) == 0
+		// недоделанные снапы, «готово» не должно врать. Прерванный скан
+		// (фаза 1) — не финиш.
+		tp := r.exp
+		return tp != nil && tp.PhaseNum() == 2 && tp.Exp != nil && tp.Exp.Done &&
+			atomic.LoadInt64(&tp.Exp.ExtrasInFlight) == 0
 	case runCheck:
 		return r.chk != nil && r.chk.Done
 	case runPrefix:
@@ -261,7 +265,13 @@ func (r *runState) elapsed() string {
 func (r *runState) statusMsg() string {
 	switch r.mode {
 	case runExploit:
-		return r.exp.ErrorMsg
+		if r.exp != nil && r.exp.PhaseNum() == 1 {
+			return r.exp.Scan.ErrorMsg
+		}
+		if r.exp != nil {
+			return r.exp.Exp.ErrorMsg
+		}
+		return ""
 	case runCheck:
 		return r.chk.ErrorMsg
 	case runPrefix:
@@ -297,14 +307,48 @@ func (r *runState) view() string {
 	return sb.String()
 }
 
-// exploitView — счётчики + лента логов (таблицу SN→статус выпилили:
-// захлёбывалась на сотнях серийников и перегружала экран; полный
-// ход прогона теперь в ленте и в log.txt папки результатов).
-// Прогресс — по УНИКАЛЬНЫМ серийникам (Progress), а не по Checked:
-// дохлые (probe miss/404/туннель-фейл) тоже отмечаются — бар
-// двигается на каждом исходе и добегает до 100%.
+// exploitView — двухфазный экран: [1/2] скан (бар по серийникам, строка
+// «окна | found | время») → [2/2] бой (бар по уникальным серийникам).
+// Живые строки сессий (Stats.SetRow) в таблицу не возвращаем: полный ход
+// прогона — в ленте и в log.txt папки результатов. Прогресс боя — по
+// УНИКАЛЬНЫМ серийникам (Progress), а не по Checked: дохлые тоже
+// отмечаются — бар двигается на каждом исходе и добегает до 100%.
 func (r *runState) exploitView() string {
-	st := r.exp
+	tp := r.exp
+	var sb strings.Builder
+
+	// шапка прогона: вход + куда пишутся результаты (паритет с headless)
+	if tp.PrefixCount > 0 {
+		sb.WriteString(centerLine(dim(fmt.Sprintf(tr("%d префикс(ов) | %d серийников на входе · //%s"),
+			tp.PrefixCount, tp.ScanTotal, r.saveDir))) + "\n")
+	} else {
+		sb.WriteString(centerLine(dim(fmt.Sprintf(tr("%d серийников на входе · //%s"),
+			tp.DirectCount, r.saveDir))) + "\n")
+	}
+
+	// ── фаза 1: скан префиксов (живые только в RAM) ──
+	if tp.PrefixCount > 0 && tp.PhaseNum() == 1 {
+		st := tp.Scan
+		sb.WriteString(centerLine(fmt.Sprintf(tr("[1/2] сканируем %d серийников"), tp.ScanTotal)) + "\n")
+		pct := 0.0
+		if st.Total > 0 {
+			pct = float64(st.Checked) / float64(st.Total) * 100
+		}
+		sb.WriteString(centerLine(fmt.Sprintf("%s %.1f%%", bar(st.Checked, st.Total, 30), pct)) + "\n")
+		sb.WriteString(centerLine(fmt.Sprintf("%d/%d | found: %s | %s | %s",
+			atomic.LoadInt64(&st.PrefixDone), int64(tp.PrefixCount),
+			green(fmt.Sprint(tp.FoundCount())),
+			fmt.Sprintf(tr("%.0f/сек"), st.Speed),
+			fmtDuration(tp.ScanSeconds()))) + "\n\n")
+		sb.WriteString(r.eventsBlock())
+		return sb.String()
+	}
+
+	// ── фаза 2: крушим найденных ──
+	st := tp.Exp
+	if tp.PrefixCount > 0 {
+		sb.WriteString(centerLine(fmt.Sprintf(tr("[2/2] ломаем %d серийников"), tp.TargetCount())) + "\n")
+	}
 	progress := st.Progress()
 	pct := 0.0
 	if st.Total > 0 {
@@ -317,7 +361,6 @@ func (r *runState) exploitView() string {
 	}
 	// pwned включает ADDED (dummy через CVE-2024-39943 — тоже pwned)
 	pwned := atomic.LoadInt64(&st.Pwned) + atomic.LoadInt64(&st.Added)
-	var sb strings.Builder
 	sb.WriteString(centerLine(fmt.Sprintf("%s %.1f%%", bar(progress, st.Total, 30), pct)) + "\n")
 	sb.WriteString(centerLine(fmt.Sprintf("%d/%d | pwned: %s | fail: %s | snaps: %s | %s",
 		progress, st.Total,
@@ -436,8 +479,8 @@ func (r *runState) eventsBlock() string {
 	bottomBorder := dim("╰" + strings.Repeat("─", barW-2) + "╯")
 	sb.WriteString(centerLine(bottomBorder) + "\n")
 
-	if r.mode == runExploit && r.exp != nil && r.exp.Done {
-		if inflight := atomic.LoadInt64(&r.exp.ExtrasInFlight); inflight > 0 {
+	if r.mode == runExploit && r.exp != nil && r.exp.PhaseNum() == 2 && r.exp.Exp.Done {
+		if inflight := atomic.LoadInt64(&r.exp.Exp.ExtrasInFlight); inflight > 0 {
 			// прогресс дошёл до 100%, но снапы/титры ещё качаются —
 			// esc сейчас прервёт их
 			sb.WriteString(centerLine(yellow(fmt.Sprintf(
