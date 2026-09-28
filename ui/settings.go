@@ -24,6 +24,12 @@ type Settings struct {
 	// и активного логина.
 	WipeUsers bool `json:"wipe_users"`
 
+	// Последний заход: предзаполняем формы, чтобы не переписывать
+	// targets.txt каждый раз (просьба из тг-чата).
+	LastInput   string `json:"last_input"`
+	LastOut     string `json:"last_out"`
+	LastThreads int    `json:"last_threads"`
+
 	Lang        string `json:"lang"`        // "ru" | "en"
 	IsActivated bool   `json:"isActivated"` // приветствие пройдено
 
@@ -92,6 +98,20 @@ func Config() Settings { return cfg }
 // ApplyLang — выставить язык i18n из конфига (headless не проходит через
 // ui.Run, где это делается само).
 func ApplyLang() { i18n.SetLang(cfg.Lang) }
+
+// RememberRun — запомнить параметры последнего захода в config.json.
+func RememberRun(inFile, outDir string, threads int) {
+	if inFile != "" {
+		cfg.LastInput = inFile
+	}
+	if outDir != "" {
+		cfg.LastOut = outDir
+	}
+	if threads > 0 {
+		cfg.LastThreads = threads
+	}
+	saveSettings()
+}
 
 func saveSettings() {
 	data, err := json.MarshalIndent(cfg, "", "  ")

@@ -147,6 +147,15 @@ func runHeadless() bool {
 		headlessUsage()
 		os.Exit(2)
 	}
+	ui.LoadSettings()
+	ui.ApplyLang()
+	cfg := ui.Config()
+	start = time.Now()
+	_ = cfg
+	if *inFile == "" && cfg.LastInput != "" {
+		*inFile = cfg.LastInput
+		out("[i] using last input: %s", *inFile)
+	}
 	if *inFile == "" {
 		out("[!] err: нужен -i/--input (файл серийников или results.txt для titles)")
 		os.Exit(2)
@@ -155,11 +164,6 @@ func runHeadless() bool {
 		out("[!] err: неизвестный режим %q — доступен exploit | titles | scan | ironscan", *mode)
 		os.Exit(2)
 	}
-
-	ui.LoadSettings()
-	ui.ApplyLang()
-	cfg := ui.Config()
-	start = time.Now()
 
 	tty := isTTY()
 	var lineLen int
@@ -609,14 +613,35 @@ func resumeFilter(serials []string, outDir string, fresh bool) ([]string, bool) 
 
 func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fresh bool,
 	progress func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
-	serials, err := exploit.LoadSerials(inFile)
-	if err != nil {
-		out("[!] err: входной файл: %v", err)
-		return 2
-	}
-	if len(serials) == 0 {
-		out("[!] err: файл пуст или серийников не нашлось")
-		return 2
+	serials, serr := exploit.LoadSerials(inFile)
+	if serr != nil || len(serials) == 0 {
+		// файла нет (или пуст) — пробуем инлайн: серийник или список
+		// через запятую/точку с запятой, как в scan/ironscan
+		var inline []string
+		seen := map[string]struct{}{}
+		for _, part := range strings.FieldsFunc(inFile, func(r rune) bool {
+			return r == ',' || r == ';' || r == ' ' || r == '\t'
+		}) {
+			if sn := ironscan.SanitizeSerial(part); sn != "" {
+				if _, ok := seen[sn]; !ok {
+					seen[sn] = struct{}{}
+					inline = append(inline, sn)
+				}
+			}
+		}
+		if serr == nil && len(serials) > 0 {
+			// файл есть и непуст — инлайн не пробуем
+			inline = nil
+		}
+		if len(inline) == 0 {
+			if serr != nil {
+				out("[!] err: входной файл: %v", serr)
+			} else {
+				out("[!] err: файл пуст или серийников не нашлось")
+			}
+			return 2
+		}
+		serials = inline
 	}
 	if outDir == "" {
 		outDir = strings.TrimSuffix(filepath.Base(inFile), filepath.Ext(inFile))
@@ -634,6 +659,7 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 	headlessBanner(true)
 	out("started exploiting %d SNs", len(serials))
 	out("saving results at //%s", outDir)
+	ui.RememberRun(inFile, outDir, threads)
 
 	rewrite := headlessAskRewrite(outDir, true)
 	if rewrite {

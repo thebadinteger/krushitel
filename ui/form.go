@@ -62,6 +62,17 @@ func (f *formState) addStr(label string, required bool, fileMustExist bool) {
 	f.fields = append(f.fields, formField{kind: fStr, label: label, validate: v, input: ti})
 }
 
+// setDefault — предзаполнить последнее добавленное строковое поле
+// (сохранение последнего захода).
+func (f *formState) setDefault(v string) {
+	if v == "" || len(f.fields) == 0 {
+		return
+	}
+	fld := &f.fields[len(f.fields)-1]
+	fld.strVal = v
+	fld.input.SetValue(v)
+}
+
 func (f *formState) addInt(label string, def int) {
 	ti := textinput.New()
 	ti.CharLimit = 12
@@ -221,14 +232,14 @@ func (f *formState) view() string {
 			sb.WriteString(centerLine(dim(fmt.Sprintf("%s: %s ✓", fld.label, val))) + "\n")
 		case i == f.cur:
 			switch fld.kind {
-		case fBool:
-			label := cyan(fld.label) + " (y/n)"
-			if fld.boolVal {
-				label += " " + green(tr("[да]"))
-			} else {
-				label += " " + red(tr("[нет]"))
-			}
-			sb.WriteString(centerLine(label) + "\n")
+			case fBool:
+				label := cyan(fld.label) + " (y/n)"
+				if fld.boolVal {
+					label += " " + green(tr("[да]"))
+				} else {
+					label += " " + red(tr("[нет]"))
+				}
+				sb.WriteString(centerLine(label) + "\n")
 			case fInt:
 				sb.WriteString(centerLine(cyan(fmt.Sprintf("%s [%s]", fld.label, fld.def))+": "+fld.input.View()) + "\n")
 			default:

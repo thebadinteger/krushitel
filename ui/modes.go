@@ -33,11 +33,21 @@ func exploitForm() *formState {
 		startExploitRun(m)
 	})
 	f.addStr(tr("файл с серийниками (targets.txt)"), true, true)
+	if cfg.LastInput != "" {
+		f.setDefault(cfg.LastInput) // сохранение последнего захода
+	}
 	f.addStr(tr("папка для результатов"), true, false)
+	if cfg.LastOut != "" {
+		f.setDefault(cfg.LastOut)
+	}
 	// 30 — рабочий дефолт: 200 одновременных handshake'ов глушат друг
 	// друга (датаграммы роняются, туннели ловят stall). Больше = не
 	// быстрее, проверено: при 20 потоках hit-rate вдвое выше.
-	f.addInt(tr("потоков"), 30)
+	defThreads := 30
+	if cfg.LastThreads > 0 {
+		defThreads = cfg.LastThreads
+	}
+	f.addInt(tr("потоков"), defThreads)
 	f.addBool(tr("снапы?"), cfg.Snaps)
 	f.addBool("autogen .xml?", cfg.XML)
 	f.addBool(tr("пре-флайт?"), cfg.Preflight)
@@ -45,6 +55,7 @@ func exploitForm() *formState {
 }
 
 func startExploitRun(m *model) {
+	RememberRun(m.form.fields[0].strVal, m.form.fields[1].strVal, m.threadsVal(30))
 	inFile := m.form.fields[0].strVal
 	outDir := m.form.fields[1].strVal
 	threads := m.threadsVal(2)
