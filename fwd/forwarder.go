@@ -312,7 +312,7 @@ func StartSupervisedWithAuth(ctx context.Context, serial, user, pass string, spe
 		lastErr = err
 		// Терминальные вердикты облака: рестарты бессмысленны, отдаём
 		// сразу (404 — устройства нет; auth — нужны креды на туннель).
-		if errors.Is(err, ErrDeviceNotFound) || errors.Is(err, ErrAuthRequired) || isAuthError(err) {
+		if errors.Is(err, ErrDeviceNotFound) || errors.Is(err, ErrAuthRequired) || errors.Is(err, ErrNoDeviceLife) || isAuthError(err) {
 			return nil, err
 		}
 		if onEvent != nil {

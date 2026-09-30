@@ -55,6 +55,12 @@ var (
 	errAuthFailed        = errors.New("device authentication failed: check credentials or salt (code=403 Forbidden)")
 )
 
+// ErrNoDeviceLife — камера не дала туннель за zombieTimeout: не ответила
+// ВООБЩЕ (облако держит 100 Trying, устройство молчит). Терминальный
+// вердикт: ре-очередь и второй круг зомби не спасают, а жгут минуты
+// (3 supervised-попытки × 2 provider-попытки × 2 круга ≈ 10 минут).
+var ErrNoDeviceLife = errors.New("camera gave no tunnel — not answering")
+
 // ErrAuthRequired — устройство требует Type-1 аутентификацию (403).
 var ErrAuthRequired = errDeviceRequireAuth
 
@@ -463,18 +469,20 @@ func punchFail() { atomic.AddInt64(&punchFailStreak, 1) }
 func punchSucceed() { atomic.StoreInt64(&punchFailStreak, 0) }
 
 func (t *Tunnel) Run() error {
-	// Жёсткий дедлайн подъёма: молчаливая камера на любой фазе хендшейка
-	// (STUN прошёл, PTCP молчит и т.п.) не должна вешать прогон. По
-	// истечении — Terminate: закрытые сокеты разблокируют зависшие чтения,
-	// Run вернёт ошибку, провайдер пометит серийник мёртвым.
+	// Зомби-сторож: камера, не давшая туннель за zombieTimeout, считается
+	// НЕ ОТВЕТИВШЕЙ ВООБЩЕ — терминальный вердикт ErrNoDeviceLife.
+	// fail(причина) + Terminate: закрытые сокеты разблокируют зависшие
+	// чтения, главный цикл вернёт Failure() = ErrNoDeviceLife, провайдер
+	// пометит серийник мёртвым насовсем.
 	go func() {
 		select {
 		case <-t.ready:
 			return // поднялся
 		case <-t.done:
 			return // погашен
-		case <-time.After(liftDeadline):
-			t.logf("lift deadline %v exceeded — terminate", liftDeadline)
+		case <-time.After(zombieTimeout):
+			t.logf("no tunnel within %v — camera never answered, terminate as zombie", zombieTimeout)
+			t.fail(ErrNoDeviceLife)
 			t.Terminate()
 		}
 	}()
@@ -1565,10 +1573,10 @@ var (
 	// начинается голод по таблице реалмов камеры (см. portPoolTarget).
 	smallPoolForce = 4
 
-	// liftDeadline — жёсткий потолок подъёма туннеля: легитимный lift
-	// (punch 10с + фолбэк на relay + до 3 quick-рестартов) укладывается
-	// с запасом; висящий — гасится watchdog'ом (см. Run).
-	liftDeadline = 120 * time.Second
+	// zombieTimeout — зомби-потолок подъёма туннеля: камера, не давшая
+	// туннель за минуту, не ответила ВООБЩЕ (см. ErrNoDeviceLife).
+	// Легитимный lift (punch 10с + фолбэк на relay) укладывается в разы.
+	zombieTimeout = 60 * time.Second
 
 	punchWindowFull  = 10 * time.Second // сеть, где punch живой
 	punchWindowHalf  = 5 * time.Second  // 3+ неудач подряд
@@ -2815,6 +2823,7 @@ func runWithRetries(t *Tunnel, onExhausted func(err error)) {
 			return
 		}
 		terminal := errors.Is(err, errDeviceNotFound) ||
+			errors.Is(err, ErrNoDeviceLife) ||
 			isAuthError(err) ||
 			strings.Contains(err.Error(), "no listeners available")
 		if terminal || attempt > RETRY_ATTEMPTS {

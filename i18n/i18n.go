@@ -176,6 +176,7 @@ var en = map[string]string{
 
 	// ── вне translate.md: код эмитит, в таблице нет ──
 	"%s — устройство требует Type 1 auth": "%s — device requires Type 1 auth",
+	"%s — нет ответа за %v — из очереди исключён": "%s — no answer for %v — excluded from queue",
 	"%s — исчерпан (%d туннель-подъёма за прогон)": "%s — exhausted (%d tunnel attempts this run)",
 	"%s — туннель не встал (%v) — в ре-очередь (попытка %d/%d)": "%s — tunnel failed (%v) — re-queued (attempt %d/%d)",
 	"ре-очередь: запуск 2-го круга для %d недоступных серийников": "re-queue: second pass for %d unreachable serials",

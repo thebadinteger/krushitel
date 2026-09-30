@@ -172,6 +172,13 @@ func (p *InProcessProvider) Acquire(ctx context.Context) (Binding, error) {
 					p.OnDead(serial, "offline (404)")
 				}
 				p.logf("%s — offline (404)", serial)
+			} else if errors.Is(err, ErrNoDeviceLife) {
+				// камера не ответила вообще за zombieTimeout — зомби:
+				// терминальный вердикт, ре-очередь и второй круг не спасут
+				if p.OnDead != nil {
+					p.OnDead(serial, fmt.Sprintf("нет ответа за %v", zombieTimeout))
+				}
+				p.logf(i18n.Tr("%s — нет ответа за %v — из очереди исключён"), serial, zombieTimeout)
 			} else if errors.Is(err, ErrAuthRequired) || isAuthError(err) {
 				if p.OnDead != nil {
 					p.OnDead(serial, "нужны креды (type 1)")
