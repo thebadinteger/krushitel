@@ -1,16 +1,19 @@
-// dumpcfg — CLI-обёртка dhip.DumpConfigDial: дамп конфига камеры по DHIP.
-// Антикамшот, фаза 1: эталонный снапшот настроек для будущего диффа
-// (что вандал поменял через 5000-й порт — титры, OSD, картинка).
+// dumpcfg — CLI-обёртка дамперов конфига камеры. Антикамшот, фаза 1:
+// эталонный снапшот настроек для будущего диффа (что вандал поменял —
+// титры, OSD, картинка).
 //
-//	dumpcfg <host:port> <user> <pass> [out.json]
+//	dumpcfg [-web host:port] <dhip:port> <user> <pass> [out.json]
 //
-// Пример:
+// -web — веб-CGI камеры (порт 80/1380): через него добираются видео-таблицы
+// (ImageParam/VideoInOsd/VideoInTitle/VideoColor), которые DHIP на части
+// прошивок не отдаёт. Пример:
 //
-//	dumpcfg 127.0.0.1:1337 admin admin
+//	dumpcfg -web 127.0.0.1:1380 127.0.0.1:1337 admin admin
 package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -20,14 +23,20 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 4 {
-		fmt.Fprintln(os.Stderr, "usage: dumpcfg <host:port> <user> <pass> [out.json]")
+	fs := flag.NewFlagSet("dumpcfg", flag.ContinueOnError)
+	web := fs.String("web", "", "веб-CGI камеры (host:port) — видео-таблицы через HTTP")
+	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
 	}
-	addr, user, pass := os.Args[1], os.Args[2], os.Args[3]
+	rest := fs.Args()
+	if len(rest) < 3 {
+		fmt.Fprintln(os.Stderr, "usage: dumpcfg [-web host:port] <dhip:port> <user> <pass> [out.json]")
+		os.Exit(2)
+	}
+	addr, user, pass := rest[0], rest[1], rest[2]
 	out := "cfg_dump.json"
-	if len(os.Args) > 4 {
-		out = os.Args[4]
+	if len(rest) > 3 {
+		out = rest[3]
 	}
 
 	dump, err := dhip.DumpAllConfigDial(func() (net.Conn, error) {
@@ -36,6 +45,20 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[-] %v\n", err)
 		os.Exit(1)
+	}
+
+	// веб-CGI: добор видео-таблиц, которых DHIP не отдал (или перезапись —
+	// CGI-версия полнее по параметрам картинки)
+	if *web != "" {
+		httpTables, err := dhip.DumpHTTPVideoConfig(*web, user, pass, 30*time.Second)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[!] web: %v\n", err)
+		} else {
+			tables := dump["tables"].(map[string]any)
+			for name, t := range httpTables {
+				tables[name] = t
+			}
+		}
 	}
 
 	b, err := json.MarshalIndent(dump, "", "  ")
