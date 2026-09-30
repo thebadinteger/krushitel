@@ -211,19 +211,54 @@ func (r *runState) logMax() int {
 	return n
 }
 
+// isAlnumSN — строка похожа на серийник (14-18 алфавитно-цифровых).
+func isAlnumSN(s string) bool {
+	if len(s) < 14 || len(s) > 18 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+			return false
+		}
+	}
+	return true
+}
+
+// feedVisible — показывать ли строку в ленте «логи». Без лог-режима —
+// только системные строки (фазы, куда сохраняем, resume-события, пинг);
+// per-serial события («SN — PWNED…», «SN — туннель ок») и [VALID] —
+// только с включённым лог-режимом (в log.txt пишутся всегда).
+func feedVisible(line string) bool {
+	if cfg.Debug {
+		return true
+	}
+	if strings.HasPrefix(line, "[VALID]") {
+		return false
+	}
+	// per-serial: «<SN> — статус»
+	if i := strings.Index(line, " — "); i > 0 && isAlnumSN(line[:i]) {
+		return false
+	}
+	return true
+}
+
 // drain — перекладка событий движков в ленту (размер — по высоте).
-// Каждая строка дублируется в лог-файл, если открыт.
+// Каждая строка дублируется в лог-файл, если открыт; в ЛЕНТУ попадают
+// только видимые без лог-режима строки (см. feedVisible).
 func (r *runState) drain() {
 	max := r.logMax()
 	for {
 		select {
 		case ev := <-r.eventsCh:
+			noteCrashLine(ev)
+			r.writeLog(ev)
+			if !feedVisible(ev) {
+				continue
+			}
 			r.events = append(r.events, ev)
 			if len(r.events) > max {
 				r.events = r.events[len(r.events)-max:]
 			}
-			noteCrashLine(ev)
-			r.writeLog(ev)
 		default:
 			return
 		}

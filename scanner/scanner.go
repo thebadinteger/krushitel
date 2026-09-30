@@ -890,6 +890,7 @@ func openOutput(outputFile string, appendMode bool, stats *ScanStats) (*os.File,
 func runPipe(ctx context.Context, stats *ScanStats, events chan<- string, sink func(string), workers int, feed func(jobs chan string), seedAlive map[string]struct{}) string {
 	// Лимиты ОС — сами, чтобы юзер не парился: на линуксе мягкий лимит fd
 	// поднимаем через Setrlimit, на винде берём безопасный кап.
+	wantWorkers := workers
 	lim := syslimits.Ensure()
 	workers = lim.ClampWorkers(workers)
 	if lim.Raised {
@@ -908,6 +909,9 @@ func runPipe(ctx context.Context, stats *ScanStats, events chan<- string, sink f
 	if len(cloudIPs) == 0 {
 		return i18n.Tr("ошибка резолва сервера: ") + MAIN_SERVER
 	}
+	// «пинг» = резолв облака: без сети скан невозможен, юзер видит,
+	// что прогон не завис, а стучится к серверу
+	emitEvent(events, "[SYS] "+fmt.Sprintf(i18n.Tr("пинг %s — ок"), fmt.Sprintf("%s:%d", MAIN_SERVER, MAIN_PORT)))
 
 	conns := make([]*net.UDPConn, 0, workers)
 	for i := 0; i < workers; i++ {
@@ -921,6 +925,12 @@ func runPipe(ctx context.Context, stats *ScanStats, events chan<- string, sink f
 
 	if len(conns) == 0 {
 		return i18n.Tr("не смог создать сокеты (фикс: ") + syslimits.SocketHint() + ")"
+	}
+	// фактическое число воркеров — ПОСЛЕ создания сокетов: сокет умер на
+	// середине — счётчик честно меньше запрошенного
+	emitEvent(events, "[SYS] "+fmt.Sprintf(i18n.Tr("воркеров: %d"), len(conns)))
+	if workers < wantWorkers {
+		emitEvent(events, "[SYS] "+fmt.Sprintf(i18n.Tr("лимит ОС: воркеров не больше %d"), lim.MaxWorkers))
 	}
 	defer func() {
 		for _, conn := range conns {

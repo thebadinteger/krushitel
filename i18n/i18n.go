@@ -23,7 +23,6 @@ var en = map[string]string{
 	// ── меню + выход ──
 	"меню":                                "menu",
 	"ломать камеры":                       "hack cameras",
-	"сканить серийники":                   "scan serials",
 	"расшифровать .xml от smartpss":       "decrypt smartpss .xml",
 	"искать префиксы с списка IP":         "find prefixes from IP list",
 	"настройки":                           "settings",
@@ -35,7 +34,6 @@ var en = map[string]string{
 	"%s — пре-флайт: %s":       "%s — preflight: %s",
 	"ошибка: %v":                       "error: %v",
 	"↑↓ навигация  ·  enter / 0-9 - выбор  ·  q - выход":                        "↑↓ navigate  ·  enter / 0-9 - select  ·  q - quit",
-	"↑↓ навигация  ·  enter / 1-2 - выбор  ·  esc - закрыть  ·  q - выход":      "↑↓ navigate  ·  enter / 1-2 - select  ·  esc - close  ·  q - quit",
 	"↑↓ навигация  ·  enter / 0-9 - выбор  ·  esc - назад  ·  q - выход":        "↑↓ navigate  ·  enter / 0-9 - select  ·  esc - back  ·  q - quit",
 	"↑↓ навигация  ·  enter/пробел - переключить  ·  esc — назад  ·  q - выход": "↑↓ navigate  ·  enter/space - toggle  ·  esc — back  ·  q - quit",
 
@@ -86,24 +84,7 @@ var en = map[string]string{
 	"папка для результатов":      "results folder",
 	"потоков":                    "threads",
 	"снапы?":                     "snapshots?",
-	"скан префиксов":                                                   "prefix scan",
-	"скан одного префикса":                                             "scan single prefix",
-	"скан файла с префиксами":                                          "scan prefix file",
-	"скан префикса":                                                    "prefix scan",
-	"префикс (10 символов)":                                            "prefix (10 chars)",
-	"префикс должен быть не менее 10 символов":                         "prefix must be at least 10 chars",
 	"список префиксов пуст":                                            "prefix list is empty",
-	"файл с префиксами (10 символов)":                                  "prefix file (10 chars)",
-	"нет префиксов в файле (нужно >= 10 символов, берутся первые 10)": "no prefixes in file (need >= 10 chars, first 10 are used)",
-	"найден незавершённый прогон: окно %d/%d. продолжить?":            "interrupted run found: window %d/%d. continue?",
-	"продолжаю с окна %d":                                              "resuming from window %d",
-	"файл префиксов изменился — стартую с нуля":                        "prefix file changed — starting over",
-	"прогон уже завершён (все окна готовы)":                            "run already finished (all windows done)",
-	"подгружено из файла: %d":                                          "loaded from file: %d",
-	"свободно RAM %.1f ГБ → окно %d префиксов (%d млн серийников)":     "free RAM %.1f GB → window of %d prefixes (%dM serials)",
-	"окно %d/%d: %d префиксов, %d серийников":                          "window %d/%d: %d prefixes, %d serials",
-	"выходной файл (только онлайн)":                                    "output file (online only)",
-	"файл %s уже есть (%d строк). дописать в конец? (нет = перезаписать)": "file %s already exists (%d lines). append? (no = overwrite)",
 	"xml → креды":                           "xml → creds",
 	"файл с результатами (SmartPSS export)": "results file (SmartPSS export)",
 	"название файла для кредов":             "creds output filename",
@@ -207,6 +188,8 @@ var en = map[string]string{
 	"логи": "logs",
 
 	// ── движок scanner ──
+	"пинг %s — ок":                        "ping %s — ok",
+	"автоподбор: установлено воркеров %d": "auto-tuning: %d workers set",
 	"ошибка резолва сервера: ":                                            "server resolve error: ",
 	"не смог создать сокеты (фикс: ":                                      "couldn't create sockets (fix: ",
 	"подними лимит вручную: ":                                             "raise the fd limit manually: ",
@@ -249,6 +232,15 @@ var en = map[string]string{
 	"%d серийников на входе · //%s":                         "%d serials on input · //%s",
 	"префикс или файл (префиксы/серийники)":                 "prefix or file (prefixes/serials)",
 	"чекпоинт от другого файла! сканим с нуля":              "checkpoint is for another file! scanning from scratch",
+
+	// ── хелп -h (headless) ──
+	"Файл с серийниками/префиксами":                                      "File with SNs/prefixes",
+	"Режимы работы  (exploit (по умолчанию) | titles | ironscan)":        "Modes  (exploit (by default) | titles | ironscan)",
+	"порт для ironscan (по умолчанию 37777)":                             "port for ironscan (37777 by default)",
+	"папка куда выводятся результаты (по умолчанию - имя входного файла)": "folder with results (by default - name of input file)",
+	"кол-во потоков (по умолчанию 30)":                                   "workers (30 by default)",
+	"игнорировать session-маркер и done.txt":                             "ignore session-mark and done.txt",
+	"Большинство параметров есть в config.json.":                         "config.json contains more parameters.",
 
 	// ── краш-сплеш ──
 	"Это бета версия":       "This is a beta",

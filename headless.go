@@ -36,6 +36,7 @@ import (
 	"krushitel/dhip"
 	"krushitel/exploit"
 	"krushitel/fwd"
+	"krushitel/i18n"
 	"krushitel/ironscan"
 	"krushitel/rtsp"
 	"krushitel/scanner"
@@ -101,17 +102,22 @@ func cloudAlive() bool {
 	return err == nil && len(addrs) > 0
 }
 
+// headlessUsage — хелп -h: баннер + флаги. Локализован через словарь
+// (язык берётся из config.json — LoadSettings/ApplyLang зовутся до печати).
 func headlessUsage() {
-	fmt.Print(`krushitel headless:
-  -i, --input FILE     вход (exploit: префикс(ы)/серийник(и) — файл или инлайн; titles: results.txt)
-  -m, --mode MODE      exploit (по умолчанию) | titles | ironscan
-  -p, --port PORT      порт для ironscan (по умолчанию 37777)
-  -o, --output DIR     папка результатов (по умолчанию — имя входного файла)
-  -t, --threads N      потоки (по умолчанию 30)
-  -f, --fresh          игнорировать session-маркер и done.txt (прогон заново)
-Бой — config.json (snaps/xml/preflight/destructive/wipe_users/dummy).
-Ctrl+C — мягкая остановка: session-маркер остаётся, следующий запуск продолжит.
-`)
+	out("[%s] krushitel v%s", time.Now().Format("15:04"), update.CurrentVersion)
+	rows := [][2]string{
+		{"  -i, --input FILE", i18n.Tr("Файл с серийниками/префиксами")},
+		{"  -m, --mode MODE", i18n.Tr("Режимы работы  (exploit (по умолчанию) | titles | ironscan)")},
+		{"  -p, --port PORT", i18n.Tr("порт для ironscan (по умолчанию 37777)")},
+		{"  -o, --output DIR", i18n.Tr("папка куда выводятся результаты (по умолчанию - имя входного файла)")},
+		{"  -t, --threads N", i18n.Tr("кол-во потоков (по умолчанию 30)")},
+		{"  -f, --fresh", i18n.Tr("игнорировать session-маркер и done.txt")},
+	}
+	for _, r := range rows {
+		out("%-22s %s", r[0], r[1])
+	}
+	out(i18n.Tr("Большинство параметров есть в config.json."))
 }
 
 // runHeadless — true: вызов обработан CLI-режимом; false: обычный TUI-старт.
@@ -126,6 +132,11 @@ func runHeadless() bool {
 		if a == "-h" || a == "--help" || a == "help" {
 			help = true
 		}
+	}
+	if help || headless {
+		// конфиг и язык — ДО хелпа/флагов: хелп локализован
+		ui.LoadSettings()
+		ui.ApplyLang()
 	}
 	if help {
 		headlessUsage()
@@ -152,11 +163,8 @@ func runHeadless() bool {
 		headlessUsage()
 		os.Exit(2)
 	}
-	ui.LoadSettings()
-	ui.ApplyLang()
 	cfg := ui.Config()
 	start = time.Now()
-	_ = cfg
 	if *inFile == "" && cfg.LastInput != "" {
 		*inFile = cfg.LastInput
 		out("[i] using last input: %s", *inFile)
@@ -166,7 +174,7 @@ func runHeadless() bool {
 		os.Exit(2)
 	}
 	if *mode != "exploit" && *mode != "titles" && *mode != "ironscan" {
-		out("[!] err: неизвестный режим %q — доступен exploit | titles | scan | ironscan", *mode)
+		out("[!] err: неизвестный режим %q — доступен exploit | titles | ironscan", *mode)
 		os.Exit(2)
 	}
 
