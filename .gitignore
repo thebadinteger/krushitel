@@ -60,3 +60,7 @@ mukachevo*/
 tailtest/
 testingniggers/
 uzhhorod*/
+
+# антикамшот: дампы конфигов (данные камер, в git не светить)
+cfg_dump.json
+dumpcfg_*.json
