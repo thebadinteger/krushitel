@@ -46,6 +46,13 @@ type Binding struct {
 	Pass    string
 	Dtype   int
 	IsRelay bool
+
+	// Реальные порты камеры из Info-блоба (0 = нет данных — дефолт
+	// 80/37777/554). Диалы эксплойта идут по ним: у камер со сдвинутыми
+	// портами дефолтные диалы умирали в тишину при живом туннеле.
+	CamHTTP int
+	CamPriv int
+	CamRTSP int
 }
 
 // HasPort сообщает, доступен ли порт на данном биндинге.
@@ -200,6 +207,12 @@ func (p *InProcessProvider) Acquire(ctx context.Context) (Binding, error) {
 			continue
 		}
 
+		camHTTP, camPriv, camRTSP := f.t.DevicePorts()
+		// Нестандартные порты из блоба — в ленту: диалы пойдут по ним,
+		// а не по дефолтным 80/37777/554.
+		if camHTTP != 0 && camHTTP != 80 || camPriv != 0 && camPriv != 37777 || camRTSP != 0 && camRTSP != 554 {
+			p.logf(i18n.Tr("%s — порты из Info: http=%d priv=%d rtsp=%d"), serial, camHTTP, camPriv, camRTSP)
+		}
 		return Binding{
 			Serial:  serial,
 			Tunnel:  fwdTunnel{f: f},
@@ -207,6 +220,9 @@ func (p *InProcessProvider) Acquire(ctx context.Context) (Binding, error) {
 			Pass:    f.Pass,
 			Dtype:   f.Dtype,
 			IsRelay: f.IsRelay(),
+			CamHTTP: camHTTP,
+			CamPriv: camPriv,
+			CamRTSP: camRTSP,
 		}, nil
 	}
 }

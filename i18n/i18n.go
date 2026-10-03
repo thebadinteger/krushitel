@@ -99,6 +99,8 @@ var en = map[string]string{
 	"выходной файл (база, без расширения)":  "output file (base, no extension)",
 	"[-] файл без хостов :(":                "[-] file has no hosts :(",
 	"[+] серийников: %d, префиксов: %d":     "[+] serials: %d, prefixes: %d",
+	"[+] серийников: %d, после фильтра: %d, префиксов: %d": "[+] serials: %d, after filter: %d, prefixes: %d",
+	"фильтр моделей (через запятую, пусто = все)": "model filter (comma-separated, empty = all)",
 	"  модель: ":                            "  model: ",
 	"  прошивка: ":                          "  firmware: ",
 
@@ -160,6 +162,7 @@ var en = map[string]string{
 	"%s — снап не вышел: порты 80, 5000, 37777 и 554 недоступны": "%s — snap failed: ports 80, 5000, 37777 and 554 unreachable",
 	"%s — снап сохранён":                    "%s — snapshot saved",
 	"%s — подключение через relay":          "%s — connecting via relay",
+	"%s — порты из Info: http=%d priv=%d rtsp=%d": "%s — ports from Info: http=%d priv=%d rtsp=%d",
 	"app relay сразу (%s)":                  "app relay immediately (%s)",
 	"%s — вычистка юзеров: %v":              "%s — user wipe: %v",
 	"%s — вычистка юзеров: лишних нет":      "%s — user wipe: nothing to delete",

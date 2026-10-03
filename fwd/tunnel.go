@@ -273,6 +273,16 @@ type Tunnel struct {
 	ready      chan struct{}
 	localPorts map[int]int
 
+	// Реальные порты камеры из Info-блоба /info/device (httpport,
+	// privport, rtspport). 0 = «нет данных — берём дефолт». Заполняются
+	// в establish (ответ пробы уже в полёте — доп. запроса нет),
+	// применяются в serve() к remote-сторонам спеков до бинда
+	// листенеров. Камеры со сдвинутыми портами раньше умирали в прогоне:
+	// туннель жив, диалы на дефолтные 80/37777 — тишина.
+	camHTTP int
+	camPriv int
+	camRTSP int
+
 	stageMu   sync.Mutex
 	lastStage string
 
@@ -687,16 +697,19 @@ func (t *Tunnel) establish() error {
 	p2psrvRemote := NewUDP(p2psrv[0], p2psrvPort, t.debug, prof)
 	p2psrvRemote.debugLog = t.logf
 	if t.dtype > 0 && t.randsalt == "" {
-		salt, err := resolveAutoSalt(prof, t.dtype, t.randsalt,
-			probeDeviceInfo(p2psrvRemote, t.serial), t.logf)
+		payload := probeDeviceInfo(p2psrvRemote, t.serial, RELAY_READ_TIMEOUT)
+		t.applyDevicePorts(payload)
+		salt, err := resolveAutoSalt(prof, t.dtype, t.randsalt, payload, t.logf)
 		p2psrvRemote.Close()
 		if err != nil {
 			return fmt.Errorf("autosalt: %v", err)
 		}
 		t.randsalt = salt
 	} else {
-		p2psrvRemote.Request(fmt.Sprintf("/probe/device/%s", t.serial), "", true, false)
-		p2psrvRemote.Request(fmt.Sprintf("/info/device/%s", t.serial), "", true, false)
+		// Порты из Info-блоба: ответ пробы читаем коротким окном —
+		// тишина (блоба нет/фильтруется) стоит 1.5с, не 15.
+		payload := probeDeviceInfo(p2psrvRemote, t.serial, probeInfoTimeout)
+		t.applyDevicePorts(payload)
 		p2psrvRemote.Close()
 	}
 
@@ -1758,14 +1771,68 @@ func (t *Tunnel) sendLocalChannel(step localChannelStep) {
 // ответ несёт зашифрованный Info-блоб. Возвращает сырой payload (nil,
 // когда устройство молчит). Общий для tunnel handshake и multi-mode
 // preflight.
-func probeDeviceInfo(u *UDP, serial string) []byte {
+// probeInfoTimeout — окно чтения Info-пробы для разбора портов в
+// Type-0 ветке (блоб может отсутствовать — тогда тишина стоит ровно
+// это, а не RELAY_READ_TIMEOUT). var — тесты ужимают.
+var probeInfoTimeout = 1500 * time.Millisecond
+
+func probeDeviceInfo(u *UDP, serial string, timeout time.Duration) []byte {
 	u.Request(fmt.Sprintf("/probe/device/%s", serial), "", true, true)
 	u.Request(fmt.Sprintf("/info/device/%s", serial), "", true, false)
-	data, err := u.Recv(65536, RELAY_READ_TIMEOUT)
+	data, err := u.Recv(65536, timeout)
 	if err != nil {
 		return nil
 	}
 	return data
+}
+
+// applyDevicePorts вытаскивает реальные порты камеры из Info-блоба
+// (/info/device: httpport/privport/rtspport) и запоминает их в туннеле.
+// Источник — тот же зашифрованный блоб, что отдаёт randsalt (dh-fwd info
+// печатает его как «Info (plain)»); у камеры без блоба ответа нет —
+// поля остаются нулями и serve() держит дефолты. Валидация 1-65535:
+// битые/нулевые поля блоба не трогают дефолты.
+func (t *Tunnel) applyDevicePorts(payload []byte) {
+	if payload == nil {
+		return
+	}
+	fields, err := infoFields(strings.TrimSpace(string(payload)))
+	if err != nil {
+		return
+	}
+	// Порты едут внутри зашифрованного блоба («Info (plain)»), но
+	// некоторые прошивки кладут их и в топ-уровень ответа — читаем оба.
+	if info := fields["Info"]; info != "" {
+		if plain, err := decryptDevInfoInfo(info); err == nil {
+			if inner, err := decodeInfoJSON(plain); err == nil {
+				for k, v := range inner {
+					fields[k] = v
+				}
+			}
+		}
+	}
+	read := func(key string) int {
+		if v, err := strconv.Atoi(fields[key]); err == nil && v >= 1 && v <= 65535 {
+			return v
+		}
+		return 0
+	}
+	httpP, privP, rtspP := read("httpport"), read("privport"), read("rtspport")
+	if httpP == 0 && privP == 0 && rtspP == 0 {
+		return // ни одного валидного порта — без шума
+	}
+	t.socksMu.Lock()
+	t.camHTTP, t.camPriv, t.camRTSP = httpP, privP, rtspP
+	t.socksMu.Unlock()
+	t.logf("cam ports from info blob: http=%d priv=%d rtsp=%d", httpP, privP, rtspP)
+}
+
+// DevicePorts возвращает реальные порты камеры из Info-блоба
+// (0 = нет данных, использовать дефолт 80/37777/554).
+func (t *Tunnel) DevicePorts() (http, priv, rtsp int) {
+	t.socksMu.Lock()
+	defer t.socksMu.Unlock()
+	return t.camHTTP, t.camPriv, t.camRTSP
 }
 
 // resolveAutoSalt восстанавливает Type-1 RandSalt из сырого payload
@@ -1917,6 +1984,23 @@ func ptcpHandshake(u *UDP, signToken []byte) error {
 
 // serve открывает локальные листенеры и качает трафик, пока туннель жив.
 func (t *Tunnel) serve() error {
+	// Порты из Info-блоба авторитетнее дефолтов: подменяем remote-стороны
+	// спеков до бинда листенеров. Камера с httpport=81/privport=37778
+	// получит живые форварды вместо мёртвых диалов в никуда.
+	override := func(from, to int) {
+		if to <= 0 || to == from {
+			return
+		}
+		for i := range t.specs {
+			if t.specs[i].Remote == from {
+				t.specs[i].Remote = to
+			}
+		}
+	}
+	override(80, t.camHTTP)
+	override(37777, t.camPriv)
+	override(554, t.camRTSP)
+
 	type okListen struct {
 		idx    int
 		port   int
