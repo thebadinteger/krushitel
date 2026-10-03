@@ -619,6 +619,15 @@ func (t *Tunnel) IsRelay() bool {
 	return strings.Contains(st, "relay")
 }
 
+// IsDirect — активный data-путь прямой UDP (STUN punch), а не релей.
+// Авторитетный вердикт для смарт-путь уведомления (dh-fwd v2.4.1):
+// считается ПОСЛЕ подъёма листенеров, когда primary уже выбран.
+func (t *Tunnel) IsDirect() bool {
+	t.socksMu.Lock()
+	defer t.socksMu.Unlock()
+	return !t.useTCPPath && t.primary != nil && t.primary == t.deviceRemote
+}
+
 // Failure возвращает последнюю ошибку туннеля (если есть).
 func (t *Tunnel) Failure() error {
 	t.errMu.Lock()
@@ -1285,13 +1294,19 @@ func (t *Tunnel) tryRePunch() {
 // [12:]. Фреймы с короткими телами дренируются и пропускаются: поздний
 // 4-байтный SYNC ack relay-агента проскальзывал мимо старого гварда
 // «непустое тело» и паниковал на [12:] срезе (slice bounds [12:4] crash
-// loop — live gate round 3, 2026-09-06). Тело короче 13 байт никогда не
-// бывает токеном, так что дренирование строго безопаснее; если токен не
-// пришёл, таймаут чтения всплывает обычной ошибкой вместо
-// процессоубивающей паники.
+// loop — live gate round 3, 2026-09-06). Тело короче 12 байт никогда не
+// бывает токеном (SYNC-ack = 4 байта), а ровно 12 — валидный заголовок
+// с пустым sign payload (relay-серверы, отдающие пустой токен); [12:]
+// отдаёт пустой слайс — безопасно.
 // errPTCPAppFallback — агент вместо токена сыпет короткие SYNC-ack:
 // это апп-диалект, 0x17 пропускаем и идем дальше с forceAppRelay.
 var errPTCPAppFallback = errors.New("ptcp token spam: app dialect fallback")
+
+// ptcpHeartbeatType — 0x13-хартбит: тело ровно 12 байт (ptcpHeartbeat),
+// как у «пустого токена». Без гварда по типу хартбит проскакивал бы как
+// валидный токен с пустым sign и сжигал бы фоллбэк-бюджет shorts
+// (dh-fwd v2.4.1: fixed: PTCP syncer).
+const ptcpHeartbeatType = 0x13
 
 func (t *Tunnel) waitForPTCPToken(u *UDP, timeout time.Duration) (*PTCP, error) {
 	deadline := time.Now().Add(timeout)
@@ -1317,7 +1332,7 @@ func (t *Tunnel) waitForPTCPToken(u *UDP, timeout time.Duration) (*PTCP, error) 
 			}
 			return nil, err
 		}
-		if len(p.Body) >= 13 {
+		if len(p.Body) >= 12 && p.Body[0] != ptcpHeartbeatType {
 			return p, nil
 		}
 		shorts++

@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"krushitel/exploit"
+	"krushitel/fwd"
 	"krushitel/i18n"
 	"krushitel/update"
 )
@@ -680,6 +681,7 @@ const (
 	rowEditCT3   // OSD слот 4
 	rowDummy     // dummy-креды: ввод login:passwd одной строкой
 	rowDebug     // лог-режим: дампы протокола облака в ленту логов
+	rowForceRelay // апп-диалект релея сразу (dh-fwd -ar)
 	rowDiscord    // discord rpc: вкл/выкл
 	rowLang        // язык: «язык: русский» / «language: english»
 	rowBack
@@ -712,6 +714,7 @@ func (m model) settingsRows() []settingsRow {
 	rows = append(rows,
 		settingsRow{tr("добавить нового юзера"), rowDummy},
 		settingsRow{fmt.Sprintf(tr("лог-режим (%s)"), onOff(cfg.Debug)), rowDebug},
+		settingsRow{fmt.Sprintf(tr("app relay сразу (%s)"), onOff(cfg.ForceAppRelay)), rowForceRelay},
 		settingsRow{fmt.Sprintf(tr("discord rpc (%s)"), onOff(cfg.DiscordRPC)), rowDiscord},
 		settingsRow{langLabel, rowLang},
 		settingsRow{tr("назад"), rowBack},
@@ -771,6 +774,10 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, textinput.Blink
 		case rowDebug:
 			cfg.Debug = !cfg.Debug
+			saveSettings()
+		case rowForceRelay:
+			cfg.ForceAppRelay = !cfg.ForceAppRelay
+			fwd.ForceAppRelay = cfg.ForceAppRelay
 			saveSettings()
 		case rowDiscord:
 			cfg.DiscordRPC = !cfg.DiscordRPC

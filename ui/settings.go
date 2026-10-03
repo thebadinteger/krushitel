@@ -50,6 +50,10 @@ type Settings struct {
 	// Discord RPC (pure fun): тогл вкл/выкл, app id зашит в бинарь.
 	DiscordRPC bool `json:"discord_rpc"`
 
+	// ForceAppRelay (аналог dh-fwd -ar): сразу идти апп-диалектом релея —
+	// без 0x17 token-обмена. Для камер/релеев, где токен-канал не живёт.
+	ForceAppRelay bool `json:"force_app_relay"`
+
 	// Profile оставлен для совместимости старых config.json; всегда smartpss.
 	Profile string `json:"profile"`
 }
@@ -81,6 +85,8 @@ func loadSettings() {
 	// Dolynk/DMSS удалены: профиль всегда smartpss, что бы ни лежало в конфиге.
 	cfg.Profile = "smartpss"
 	_ = fwd.SetProfile(cfg.Profile)
+	// -ar из dh-fwd: форс апп-диалекта на релее (глобаль fwd-пакета).
+	fwd.ForceAppRelay = cfg.ForceAppRelay
 	// Миграция старого единого текста: уходит в канал + слот 1, поле чистим.
 	if cfg.ChannelText == "" && cfg.Text != "" {
 		cfg.ChannelText = cfg.Text
