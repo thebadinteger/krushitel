@@ -17,6 +17,7 @@ import (
 	"krushitel/exploit"
 	"krushitel/fwd"
 	"krushitel/i18n"
+	"krushitel/scanner"
 	"krushitel/update"
 )
 
@@ -682,10 +683,32 @@ const (
 	rowDummy     // dummy-креды: ввод login:passwd одной строкой
 	rowDebug     // лог-режим: дампы протокола облака в ленту логов
 	rowForceRelay // апп-диалект релея сразу (dh-fwd -ar)
+	rowGovernor   // губернатор скорости скана: AIMD вкл/выкл
+	rowGovCap     // ручной потолок PPS (0 = авто), цикл по Enter
 	rowDiscord    // discord rpc: вкл/выкл
 	rowLang        // язык: «язык: русский» / «language: english»
 	rowBack
 )
+
+// govCapLabel — подпись ручного потолка PPS: 0 = авто (AIMD).
+func govCapLabel(cap int) string {
+	if cap <= 0 {
+		return tr("авто")
+	}
+	return fmt.Sprintf("%d", cap)
+}
+
+// nextGovCap — цикл ручного потолка PPS по Enter:
+// авто → 250 → 500 → 1000 → 2000 → 3000 → 5000 → 10000 → авто.
+func nextGovCap(cur int) int {
+	steps := []int{0, 250, 500, 1000, 2000, 3000, 5000, 10000}
+	for i, s := range steps {
+		if s == cur {
+			return steps[(i+1)%len(steps)]
+		}
+	}
+	return 0
+}
 
 // settingsRows — динамическое меню: подпункты титров видны,
 // только когда автозамена включена.
@@ -715,6 +738,8 @@ func (m model) settingsRows() []settingsRow {
 		settingsRow{tr("добавить нового юзера"), rowDummy},
 		settingsRow{fmt.Sprintf(tr("лог-режим (%s)"), onOff(cfg.Debug)), rowDebug},
 		settingsRow{fmt.Sprintf(tr("app relay сразу (%s)"), onOff(cfg.ForceAppRelay)), rowForceRelay},
+		settingsRow{fmt.Sprintf(tr("губернатор скорости (%s)"), onOff(cfg.Governor)), rowGovernor},
+		settingsRow{fmt.Sprintf(tr("потолок pps: %s"), govCapLabel(cfg.GovernorCap)), rowGovCap},
 		settingsRow{fmt.Sprintf(tr("discord rpc (%s)"), onOff(cfg.DiscordRPC)), rowDiscord},
 		settingsRow{langLabel, rowLang},
 		settingsRow{tr("назад"), rowBack},
@@ -778,6 +803,14 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case rowForceRelay:
 			cfg.ForceAppRelay = !cfg.ForceAppRelay
 			fwd.ForceAppRelay = cfg.ForceAppRelay
+			saveSettings()
+		case rowGovernor:
+			cfg.Governor = !cfg.Governor
+			scanner.GovernorOn = cfg.Governor
+			saveSettings()
+		case rowGovCap:
+			cfg.GovernorCap = nextGovCap(cfg.GovernorCap)
+			scanner.GovernorCap = cfg.GovernorCap
 			saveSettings()
 		case rowDiscord:
 			cfg.DiscordRPC = !cfg.DiscordRPC

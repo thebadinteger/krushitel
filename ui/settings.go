@@ -6,6 +6,7 @@ import (
 
 	"krushitel/fwd"
 	"krushitel/i18n"
+	"krushitel/scanner"
 )
 
 // Settings — как в krushitel (config.json), но без dummy-полей: тут только
@@ -54,6 +55,13 @@ type Settings struct {
 	// без 0x17 token-обмена. Для камер/релеев, где токен-канал не живёт.
 	ForceAppRelay bool `json:"force_app_relay"`
 
+	// Governor (scan mode): AIMD-губернатор UDP-скана — сам находит
+	// предел канала/роутера и держится у него. Off = максимум скорости,
+	// но шквал датаграмм забивает аплинк (лаги инета).
+	Governor bool `json:"governor"`
+	// GovernorCap — ручной потолок PPS (0 = авто/AIMD).
+	GovernorCap int `json:"governor_cap"`
+
 	// Profile оставлен для совместимости старых config.json; всегда smartpss.
 	Profile string `json:"profile"`
 }
@@ -71,6 +79,8 @@ var cfg = Settings{
 	DummyLogin:  "krushitel",
 	DummyPass:   "TancuiPantera1337",
 	Profile:     "smartpss",
+	Governor:    true,
+	GovernorCap: 0,
 }
 
 func loadSettings() {
@@ -87,6 +97,9 @@ func loadSettings() {
 	_ = fwd.SetProfile(cfg.Profile)
 	// -ar из dh-fwd: форс апп-диалекта на релее (глобаль fwd-пакета).
 	fwd.ForceAppRelay = cfg.ForceAppRelay
+	// Губернатор скана (scan mode): тумблер + ручной потолок PPS.
+	scanner.GovernorOn = cfg.Governor
+	scanner.GovernorCap = cfg.GovernorCap
 	// Миграция старого единого текста: уходит в канал + слот 1, поле чистим.
 	if cfg.ChannelText == "" && cfg.Text != "" {
 		cfg.ChannelText = cfg.Text
