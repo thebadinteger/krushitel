@@ -211,9 +211,9 @@ func (r *runState) logMax() int {
 	return n
 }
 
-// isAlnumSN — строка похожа на серийник (14-18 алфавитно-цифровых).
+// isAlnumSN — строка похожа на серийник (14-15 алфавитно-цифровых).
 func isAlnumSN(s string) bool {
-	if len(s) < 14 || len(s) > 18 {
+	if len(s) < 14 || len(s) > 15 {
 		return false
 	}
 	for _, c := range s {
