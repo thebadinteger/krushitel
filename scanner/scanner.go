@@ -54,11 +54,6 @@ const (
 	// 1 + CHANNEL_RETRIES.
 	CHANNEL_RETRIES = 2
 
-	// MAX_RPS — жесткий потолок запросов в секунду на всё приложение,
-	// чтобы облако Dahua не захлёбывалось от шквала датаграмм.
-	MAX_RPS     = 3000
-	BURST_LIMIT = 64
-
 	// teardown-эксперимент: после живого ack шлём валидный STUN-init на
 	// LocalAddr/PubAddr из ack (прямо и через облако) и молчим — девайс
 	// переходит из «ждёт клиента» в «ведёт переговоры», чей таймаут
@@ -66,100 +61,6 @@ const (
 	// alive/мин вырастет. Эффект меряется счётчиком alive/мин в UI.
 	TEARDOWN_ALIVE = true
 )
-
-// rateLimiter — потокобезопасный ограничитель частоты отправки запросов (virtual-time leaky bucket).
-// Гарантирует строгий потолок RPS суммарно по всем воркерам и сокетам.
-type rateLimiter struct {
-	interval time.Duration
-	burst    time.Duration
-	mu       sync.Mutex
-	next     time.Time
-}
-
-func newRateLimiter(rps int, burst int) *rateLimiter {
-	if rps <= 0 {
-		return nil
-	}
-	if burst <= 0 {
-		burst = 1
-	}
-	inv := time.Second / time.Duration(rps)
-	return &rateLimiter{
-		interval: inv,
-		burst:    time.Duration(burst) * inv,
-		next:     time.Now(),
-	}
-}
-
-func (rl *rateLimiter) wait(ctx context.Context) error {
-	if rl == nil {
-		return nil
-	}
-	rl.mu.Lock()
-	now := time.Now()
-	earliest := now.Add(-rl.burst)
-	if rl.next.Before(earliest) {
-		rl.next = earliest
-	}
-	if rl.next.Before(now) {
-		rl.next = now
-	}
-	reserve := rl.next
-	rl.next = rl.next.Add(rl.interval)
-	rl.mu.Unlock()
-
-	delay := reserve.Sub(now)
-	if delay <= 0 {
-		return nil
-	}
-
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
-// tryReserve — занять слот НЕ блокируя: true — слот наш, отправляй;
-// false — слота нет, ближайший освободится через nextDelay(). Воркер при
-// отказе уходит читать сокет — раньше wait() спал прямо в send, ответы
-// зрели в буфере непрочитанными, RTT считался от sentAt до фактического
-// чтения — ложный bloat и круг занижения PPS.
-func (rl *rateLimiter) tryReserve() bool {
-	if rl == nil {
-		return true
-	}
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	now := time.Now()
-	earliest := now.Add(-rl.burst)
-	if rl.next.Before(earliest) {
-		rl.next = earliest
-	}
-	if rl.next.After(now) {
-		return false
-	}
-	rl.next = rl.next.Add(rl.interval)
-	return true
-}
-
-// nextDelay — через сколько освободится ближайший слот (0 — сейчас).
-func (rl *rateLimiter) nextDelay() time.Duration {
-	if rl == nil {
-		return 0
-	}
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	d := time.Until(rl.next)
-	if d < 0 {
-		d = 0
-	}
-	return d
-}
 
 var cseqCounter int64
 
@@ -353,38 +254,7 @@ type channelPipeline struct {
 	graveyard                 map[int64]*graveEntry
 	counted                   map[string]struct{} // серийники, уже учтённые в Checked
 	buf                       []byte
-	limiter                   *rateLimiter
 	ctx                       context.Context
-}
-
-// tryRate — слот лимитера без блокировки (nil-лимитер = безлимит).
-// Вызывается ДО изъятия серийника из jobs — отказ не теряет работу.
-func (p *channelPipeline) tryRate() bool {
-	if p.limiter == nil {
-		return true
-	}
-	return p.limiter.tryReserve()
-}
-
-// blockRate — блокирующее занятие слота. Только когда читать нечего
-// (окно и кладбище пусты) — спать в этот момент безопасно.
-func (p *channelPipeline) blockRate() bool {
-	if p.limiter == nil {
-		return true
-	}
-	ctx := p.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return p.limiter.wait(ctx) == nil
-}
-
-// nextRateDelay — когда освободится ближайший слот лимитера (0 — сейчас).
-func (p *channelPipeline) nextRateDelay() time.Duration {
-	if p.limiter == nil {
-		return 0
-	}
-	return p.limiter.nextDelay()
 }
 
 func newChannelPipeline(conn *net.UDPConn, timeout time.Duration) *channelPipeline {
@@ -450,14 +320,11 @@ func (p *channelPipeline) sendFail(serial string, stats *ScanStats) {
 }
 
 // send ставит channel-проб серийника в окно. false — сокет умер на записи.
-// send ставит channel-проб серийника в окно. Слот лимитера берёт вызыватель
-// (tryRate/blockRate). false — сокет умер на записи.
 func (p *channelPipeline) send(serial string) bool {
 	cseq := atomic.AddInt64(&cseqCounter, 1)
 	aid := randomAID()
 	if !p.write("DHPOST", fmt.Sprintf("/device/%s/p2p-channel", serial), p2pChannelBody(p.lport, aid), cseq) {
 		protolog("× %s send fail (socket write, cseq=%d)", serial, cseq)
-		govRecordErr()
 		return false
 	}
 	protolog("> DHPOST /device/%s/p2p-channel cseq=%d", serial, cseq)
@@ -502,7 +369,6 @@ func (p *channelPipeline) expire(stats *ScanStats) {
 		if now.After(ir.deadline) {
 			delete(p.inflight, c)
 			p.expiredCycle++
-			govRecordTO()
 			p.markChecked(ir.serial, stats)
 			p.graveyard[c] = &graveEntry{serial: ir.serial, aid: ir.aid, retries: ir.retries, deadline: now.Add(p.graceTTL)}
 		}
@@ -513,14 +379,6 @@ func (p *channelPipeline) expire(stats *ScanStats) {
 				delete(p.graveyard, c)
 				atomic.AddInt64(&stats.Dead, 1)
 				protolog("× %s dead (silence, retries exhausted)", g.serial)
-				continue
-			}
-			// Слот лимитера берём заранее и не блокируя: нет слота — ретрай
-			// откладывается до ближайшего слота. Запись из кладбища не
-			// удаляем до состоявшейся отправки — раньше waitRate спал здесь
-			// (редко), а при отказе по ctx серийник терялся молча.
-			if !p.tryRate() {
-				g.deadline = now.Add(p.nextRateDelay() + time.Millisecond)
 				continue
 			}
 			delete(p.graveyard, c)
@@ -536,7 +394,6 @@ func (p *channelPipeline) sendRetry(g *graveEntry, stats *ScanStats) {
 	cseq := atomic.AddInt64(&cseqCounter, 1)
 	aid := randomAID()
 	if !p.write("DHPOST", fmt.Sprintf("/device/%s/p2p-channel", g.serial), p2pChannelBody(p.lport, aid), cseq) {
-		govRecordErr()
 		p.sendFail(g.serial, stats)
 		return
 	}
@@ -560,9 +417,6 @@ func (p *channelPipeline) resolve(r dhResp, aliveCh chan<- string, stats *ScanSt
 		delete(p.inflight, r.CSeq)
 		p.resolvedCycle++
 		p.markChecked(ir.serial, stats)
-		if !ir.sentAt.IsZero() {
-			govRecordOK(time.Since(ir.sentAt))
-		}
 		if channelAckAlive(r) {
 			atomic.AddInt64(&stats.Alive, 1)
 			protolog("< %d cseq=%d %s (alive)", r.Code, r.CSeq, ir.serial)
@@ -683,23 +537,15 @@ func (p *channelPipeline) govern() {
 // run — главный цикл воркера: непрерывный скользящий конвейер (sliding window).
 // Новые запросы уходят сразу, как только освобождается слот в p.window, не
 // дожидаясь опорожнения всего окна (устраняет stop-and-wait задержку).
-// Слот лимитера берётся НЕ блокируя: нет слота — воркер уходит читать
-// сокет с капом на ожидание до ближайшего слота, серийник остаётся в jobs.
 func (p *channelPipeline) run(ctx context.Context, jobs <-chan string, aliveCh chan<- string, stats *ScanStats) {
 	p.ctx = ctx
-	var pumpCap time.Duration
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		pumpCap = 0
 
 		// Дозаполняем окно до p.window, пока в jobs есть данные
 		for len(p.inflight) < p.window {
-			if !p.tryRate() {
-				pumpCap = p.nextRateDelay() + time.Millisecond
-				goto readPhase
-			}
 			select {
 			case <-ctx.Done():
 				return
@@ -729,9 +575,6 @@ func (p *channelPipeline) run(ctx context.Context, jobs <-chan string, aliveCh c
 				if !ok {
 					return
 				}
-				if !p.blockRate() {
-					return // отмена на слоте лимитера
-				}
 				if !p.send(s) {
 					if ctx.Err() != nil {
 						return
@@ -742,10 +585,8 @@ func (p *channelPipeline) run(ctx context.Context, jobs <-chan string, aliveCh c
 			continue
 		}
 
-		// Читаем датаграмму или обрабатываем таймаут; если пришли сюда без
-		// слота лимитера — ждём максимум до ближайшего слота, чтобы
-		// вернуться к отправке, а не спать до дедлайна проб
-		p.pump(ctx, aliveCh, stats, pumpCap)
+		// Читаем датаграмму или обрабатываем таймаут
+		p.pump(ctx, aliveCh, stats)
 
 		// Адаптируем окно по завершении порции запросов
 		if (p.resolvedCycle + p.expiredCycle) >= int64(p.window) {
@@ -756,7 +597,7 @@ func (p *channelPipeline) run(ctx context.Context, jobs <-chan string, aliveCh c
 drain:
 	// jobs закрыты: дожидаемся завершения окна и кладбища
 	for (len(p.inflight) > 0 || len(p.graveyard) > 0) && ctx.Err() == nil {
-		p.pump(ctx, aliveCh, stats, 0)
+		p.pump(ctx, aliveCh, stats)
 		if (p.resolvedCycle + p.expiredCycle) >= int64(p.window) {
 			p.govern()
 		}
@@ -766,15 +607,10 @@ drain:
 // pump — одна итерация чтения: читает датаграмму до ближайшего дедлайна
 // (окно+кладбище), expiry — при тишине. Читаем даже за просроченным
 // дедлайном с миллисекундным окном: датаграмма могла уже лежать в буфере.
-// maxWait > 0 — кап ожидания (ближайший слот лимитера): возвращаемся к
-// отправке, а не спим до дедлайна проб.
-func (p *channelPipeline) pump(ctx context.Context, aliveCh chan<- string, stats *ScanStats, maxWait time.Duration) {
+func (p *channelPipeline) pump(ctx context.Context, aliveCh chan<- string, stats *ScanStats) {
 	dl := p.minDeadline()
 	now := time.Now()
 	wait := dl.Sub(now)
-	if maxWait > 0 && maxWait < wait {
-		wait = maxWait
-	}
 	if wait < time.Millisecond {
 		wait = time.Millisecond
 	}
@@ -787,9 +623,8 @@ func (p *channelPipeline) pump(ctx context.Context, aliveCh chan<- string, stats
 	p.expire(stats)
 }
 
-func scanWorker(ctx context.Context, conn *net.UDPConn, jobs <-chan string, aliveCh chan<- string, stats *ScanStats, timeout time.Duration, limiter *rateLimiter) {
+func scanWorker(ctx context.Context, conn *net.UDPConn, jobs <-chan string, aliveCh chan<- string, stats *ScanStats, timeout time.Duration) {
 	p := newChannelPipeline(conn, timeout)
-	p.limiter = limiter
 	p.run(ctx, jobs, aliveCh, stats)
 }
 
@@ -1024,12 +859,8 @@ func runPipe(ctx context.Context, stats *ScanStats, events chan<- string, sink f
 
 	// Один круг: воркеры на живых сокетах, alive сразу в выходной файл.
 	// Тишина облака отрабатывается ретраями внутри пайплайна
-	// (expire → sendRetry) — отдельных кругов нет.
-	resetGov()
-	limiter := newRateLimiter(govStartPPS, BURST_LIMIT)
-	// губернатор AIMD: старт с безопасного минимума, дальше сам находит
-	// предел канала/роутера и держится у него
-	go governorLoop(ctx, limiter)
+	// (expire → sendRetry) — отдельных кругов нет. Скорость сама упирается
+	// в окно/RTT (Литтл), перегруз облака гасит оконный губернатор (govern).
 	jobs := make(chan string, workers*10)
 	aliveCh := make(chan string, workers*10)
 
@@ -1046,7 +877,7 @@ func runPipe(ctx context.Context, stats *ScanStats, events chan<- string, sink f
 					panic(r)
 				}
 			}()
-			scanWorker(ctx, c, jobs, aliveCh, stats, ACK_TIMEOUT, limiter)
+			scanWorker(ctx, c, jobs, aliveCh, stats, ACK_TIMEOUT)
 		}(conn)
 	}
 
