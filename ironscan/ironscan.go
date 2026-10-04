@@ -1,9 +1,11 @@
 // Package ironscan — IP→serial сканер Dahua (TCP 37777), база — dhscp
-// (github.com/thebadinteger/dhscp, MIT):
+// (github.com/thebadinteger/dhscp, MIT) + Realm-фоллбек из dahua-info.py:
 //
-//	одним куском: hello (a0 05 00 60, magic tail a1aa) + 0xa4:0x07 (серийник)
-//	+ 0xa4:0x0b (модель) → 3 фрейма: ack, серийник, модель; прошивка —
-//	0xa4:0x08 тем же коннектом (best-effort)
+//	ступень 1 (dhscp): hello (a0 05 00 60, magic tail a1aa) + 0xa4:0x07
+//	(серийник) + 0xa4:0x0b (модель) одним куском → ack, серийник, модель;
+//	прошивка — 0xa4:0x08 тем же коннектом (best-effort)
+//	ступень 2 (только если серийника нет, свежий диал): Realm-проба 0xa001
+//	→ «Realm:Login to <SN>» из челленджа; модель/прошивка — 0xa4:0x0b/0x08
 //
 // Вход: masscan -oG («Discovered open port 37777/tcp on 1.2.3.4» — tcp/udp
 // без разницы), IP, IP:port, CIDR, диапазоны a.b.c.d-e.f.g.h и a.b.c.d-x.
@@ -37,6 +39,9 @@ var (
 	// reHexJunk — md5-подобный мусор из Realm (32 lowercase hex), бывает
 	// склеен с настоящим серийником: e3597da4…94K0043FPBQ0635A.
 	reHexJunk = regexp.MustCompile(`^[0-9a-f]{16,}|[0-9a-f]{16,}$`)
+	// reModel — модель в свободном тексте Realm-ответа (fallback, если
+	// 0xa4:0x0b молчит).
+	reModel = regexp.MustCompile(`(?:IPC|NVR|HCVR|DH)-[A-Z0-9\-]+`)
 )
 
 // maxRangeIPs — потолок разворота одного диапазона/CIDR (как в dhscp).
@@ -196,22 +201,39 @@ func tryConnect(ctx context.Context, target string, port int, timeout time.Durat
 		addr = net.JoinHostPort(target, strconv.Itoa(port))
 	}
 
-	d := net.Dialer{Timeout: timeout}
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	// ступень 1 — dhscp-burst
+	conn, err := dialTarget(ctx, addr, timeout)
 	if err != nil {
 		if strings.Contains(err.Error(), "connection refused") {
 			return Result{Err: "refused"}
 		}
 		return Result{Err: err.Error()}
 	}
-	defer conn.Close()
-
-	// Отмена: немедленный дедлайн будит блокирующий read при ctx.Done,
-	// иначе отмену видно только между пробами.
 	stop := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Now()) })
-	defer stop()
+	r1 := probeConn(conn, timeout)
+	stop()
+	conn.Close()
+	if r1.Err == "" {
+		return r1
+	}
 
-	return probeConn(conn, timeout)
+	// ступень 2 — Realm 0xa001 (свежий диал: коннект после burst может
+	// быть в размазанном состоянии, если фреймы пришли не по счёту).
+	// Если второй диал не удался — репортим первую ступень.
+	conn2, err := dialTarget(ctx, addr, timeout)
+	if err != nil {
+		return r1
+	}
+	stop2 := context.AfterFunc(ctx, func() { conn2.SetDeadline(time.Now()) })
+	r2 := probeRealmConn(conn2, timeout)
+	stop2()
+	conn2.Close()
+	return r2
+}
+
+func dialTarget(ctx context.Context, addr string, timeout time.Duration) (net.Conn, error) {
+	d := net.Dialer{Timeout: timeout}
+	return d.DialContext(ctx, "tcp", addr)
 }
 
 // probeConn — dhscp-проба по живому коннекту: burst 96 байт (hello +
@@ -261,6 +283,156 @@ func probeConn(conn net.Conn, timeout time.Duration) Result {
 	}
 
 	return Result{Serial: serial, Model: model, Firmware: firmware}
+}
+
+// ── ступень 2: Realm-проба (dahua-info.py) ──────────────────────────
+
+// generateProbe — 32-байтовый DVRIP Realm Request:
+// [0-1] 0xa001, [2-23] нули, [24-31] magic tail (dahua-info.py:
+// struct.pack('>I', 0xa0010000) + zeros + struct.pack('>Q', 0x050201010000a1aa)).
+func generateProbe() []byte {
+	header := make([]byte, 32)
+	header[0] = 0xa0
+	header[1] = 0x01
+	copy(header[24:32], []byte{0x05, 0x02, 0x01, 0x01, 0x00, 0x00, 0xa1, 0xaa})
+	return header
+}
+
+// dvripCmd — 0xa4-syscall c кодом в [8:12] (LE u32): запрос-ответ. Длина
+// payload — u16 в [4:6] (НЕ u32: на части камер байты [6:8] не нулевые —
+// сессия/флаги; u32-чтение давало мусорную длину и модель терялась).
+func dvripCmd(conn net.Conn, code uint32) []byte {
+	pkt := make([]byte, 32)
+	binary.LittleEndian.PutUint32(pkt[0:4], 0xa4)
+	binary.LittleEndian.PutUint32(pkt[8:12], code)
+	if _, err := conn.Write(pkt); err != nil {
+		return nil
+	}
+
+	hdr := make([]byte, 32)
+	if _, err := io.ReadFull(conn, hdr); err != nil {
+		return nil
+	}
+	length := int(binary.LittleEndian.Uint16(hdr[4:6]))
+	if length == 0 || length > 64*1024 {
+		return nil
+	}
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(conn, payload); err != nil {
+		return payload[:0]
+	}
+	return payload
+}
+
+func nullTerm(b []byte) string {
+	if i := bytes.IndexByte(b, 0); i >= 0 {
+		b = b[:i]
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// probeRealmConn — Realm-проба по живому коннекту: 0xa001 → ответ с
+// «Realm:Login to <SN>»; серийник утекает в челлендже до авторизации.
+func probeRealmConn(conn net.Conn, timeout time.Duration) Result {
+	if tc, ok := conn.(*net.TCPConn); ok {
+		tc.SetNoDelay(true)
+	}
+	conn.SetDeadline(time.Now().Add(timeout))
+
+	if _, err := conn.Write(generateProbe()); err != nil {
+		return Result{Err: err.Error()}
+	}
+
+	hdr := make([]byte, 32)
+	if _, err := io.ReadFull(conn, hdr); err != nil {
+		return Result{Err: timeoutOrErr(err)}
+	}
+
+	var response []byte
+	if hdr[0] == 0xb0 && (hdr[1] == 0x00 || hdr[1] == 0x01) || hdr[0] == 0xf6 {
+		// длина — u16 [4:6], как в dvripCmd; обрыв payload по таймауту не
+		// валим — парсим что пришло (питон читает до тишины)
+		payloadLen := int(binary.LittleEndian.Uint16(hdr[4:6]))
+		if payloadLen > 0 {
+			payload := make([]byte, payloadLen)
+			if _, err := io.ReadFull(conn, payload); err != nil && err != io.EOF {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					// частичный ответ лучше пустого
+				} else {
+					return Result{Err: err.Error()}
+				}
+			}
+			response = append(hdr, payload...)
+		} else {
+			response = hdr
+		}
+	} else {
+		// неизвестный заголовок — читаем до тишины короткими таймаутами
+		// (dahua-info.py: recv-цикл с 0.3s). Один Read терял хвосты
+		// многосегментных ответов — с ними улетали серийник и модель.
+		buf := make([]byte, 4096)
+		for {
+			conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+			n, rerr := conn.Read(buf)
+			if n > 0 {
+				response = append(response, buf[:n]...)
+			}
+			if rerr != nil {
+				break
+			}
+		}
+	}
+
+	res := parseResponse(response)
+	if res.Err != "" {
+		return res
+	}
+
+	// модель по 0x0b, прошивка по 0x08 (dahua-info.py)
+	conn.SetDeadline(time.Now().Add(timeout))
+	if raw := dvripCmd(conn, 0x0b); len(raw) > 0 {
+		if m := nullTerm(raw); m != "" {
+			res.Model = m
+		}
+	}
+	conn.SetDeadline(time.Now().Add(timeout))
+	if raw := dvripCmd(conn, 0x08); len(raw) > 0 {
+		if fw := nullTerm(raw); fw != "" {
+			res.Firmware = fw
+		}
+	}
+
+	return res
+}
+
+func parseResponse(response []byte) Result {
+	var serial, model string
+
+	// точный источник серийника (dahua-info.py): «Realm:Login to <SN>»
+	payload := response
+	if len(payload) > 32 {
+		payload = payload[32:]
+	}
+	for _, line := range strings.Split(string(payload), "\n") {
+		line = strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if strings.HasPrefix(line, "Realm:Login to ") {
+			serial = SanitizeSerial(line[len("Realm:Login to "):])
+			break
+		}
+	}
+	// regex fallback по всему ответу
+	if serial == "" {
+		serial = pickSerial(string(response))
+	}
+	// модель regex'ом — только если 0x0b не даст
+	if m := reModel.Find(response); m != nil {
+		model = string(m)
+	}
+
+	if serial == "" {
+		return Result{Err: "no serial"}
+	}
+	return Result{Serial: serial, Model: model}
 }
 
 // ── вход: masscan -oG / IP / IP:port / CIDR / диапазоны ─────────────

@@ -240,10 +240,11 @@ func runHeadless() bool {
 	return true
 }
 
-// runHeadlessIronScan — ironscan: dhscp-проба 37777 (hello + 0xa4:0x07
-// серийник + 0xa4:0x0b модель, прошивка 0xa4:0x08). Формат целей: masscan
-// -oG («Discovered open port 37777/tcp on IP»), IP, IP:port, CIDR,
-// диапазоны — UTF-16 с BOM понимается; порядок скана псевдослучайный.
+// runHeadlessIronScan — ironscan: двухступенчатая проба 37777 — dhscp-burst
+// (hello + 0xa4:0x07 серийник + 0xa4:0x0b модель, прошивка 0xa4:0x08), пусто
+// → Realm 0xa001 («Realm:Login to <SN>»). Формат целей: masscan -oG
+// («Discovered open port 37777/tcp on IP»), IP, IP:port, CIDR, диапазоны —
+// UTF-16 с BOM понимается; порядок скана псевдослучайный.
 func runHeadlessIronScan(cfg ui.Settings, inFile, outFile string, threads, port int,
 	progress func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
 	targets, terr := ironscan.LoadTargets(inFile)
