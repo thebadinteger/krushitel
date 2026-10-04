@@ -33,6 +33,7 @@ const (
 var (
 	govPPS       int64 = govStartPPS
 	govSlowStart int64 = 1
+	govHealthy   int64 // тиков подряд без беды — ре-арм slow start
 
 	govOK  int64
 	govTO  int64
@@ -42,6 +43,24 @@ var (
 	govRTTIdx  int64
 	govRTTBase int64 // наносекунды, EMA медианы на здоровой фазе
 )
+
+// resetGov — чистое состояние губернатора на прогон. Состояние глобальное
+// и жило между прогонами: новый Run стартовал с PPS прошлого круга (рывок
+// без разгона — лимитер создаётся на 150, а первый тик подменял его
+// устаревшим значением) и навсегда выключенным slow start.
+func resetGov() {
+	atomic.StoreInt64(&govPPS, govStartPPS)
+	atomic.StoreInt64(&govSlowStart, 1)
+	atomic.StoreInt64(&govHealthy, 0)
+	atomic.StoreInt64(&govOK, 0)
+	atomic.StoreInt64(&govTO, 0)
+	atomic.StoreInt64(&govErr, 0)
+	atomic.StoreInt64(&govRTTIdx, 0)
+	atomic.StoreInt64(&govRTTBase, 0)
+	for i := range govRTT {
+		atomic.StoreInt64(&govRTT[i], 0)
+	}
+}
 
 // govRecordOK — ответ от облака получен (любой, даже «offline»: важен
 // факт живого пути). rtt — от отправки пробы до ответа.
@@ -86,6 +105,13 @@ func (rl *rateLimiter) setRPS(rps int) {
 	rl.mu.Unlock()
 }
 
+// govErrBackoff — локальные ошибки считаются перегрузом, только если их
+// неединично и много: одна transient-ошибка записи из тысяч отправок за
+// тик — не повод резать скорость вдвое. Порог: ≥3 ошибок И ≥5% тика.
+func govErrBackoff(er, total int64) bool {
+	return er >= 3 && er*100 >= total*5
+}
+
 // governorLoop — тик 2.5с: дельты → фаза AIMD → подмена лимита.
 func governorLoop(ctx context.Context, rl *rateLimiter) {
 	for {
@@ -104,6 +130,7 @@ func governorLoop(ctx context.Context, rl *rateLimiter) {
 
 			pps := atomic.LoadInt64(&govPPS)
 			newPPS := pps
+			hard := false // тик с бедой — обнуляет счётчик здоровья
 
 			// RTT-сигнал: медиана против базы (bufferbloat раньше потерь)
 			bloat := false
@@ -122,16 +149,27 @@ func governorLoop(ctx context.Context, rl *rateLimiter) {
 			}
 
 			switch {
-			case er > 0 || lossPct > float64(govBackoffPct):
+			case govErrBackoff(er, total) || lossPct > float64(govBackoffPct):
 				newPPS = pps / 2
 				atomic.StoreInt64(&govSlowStart, 0)
+				hard = true
 			case bloat:
 				newPPS = pps * 7 / 10
 				atomic.StoreInt64(&govSlowStart, 0)
+				hard = true
 			case lossPct < float64(govSlowStartPct) && atomic.LoadInt64(&govSlowStart) == 1:
 				newPPS = pps * 3 / 2
 			case lossPct < float64(govCaPct):
 				newPPS = pps + pps/20
+			}
+			// ре-арм slow start: 8 тиков (~20с) без беды при низкой потере —
+			// иначе после первого инцидента рост навсегда линейный +5%
+			if !hard && lossPct < float64(govSlowStartPct) {
+				if atomic.AddInt64(&govHealthy, 1) >= 8 {
+					atomic.StoreInt64(&govSlowStart, 1)
+				}
+			} else {
+				atomic.StoreInt64(&govHealthy, 0)
 			}
 			if newPPS < govFloorPPS {
 				newPPS = govFloorPPS
