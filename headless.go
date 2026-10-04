@@ -19,14 +19,12 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"flag"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -242,42 +240,21 @@ func runHeadless() bool {
 	return true
 }
 
-// runHeadlessIronScan — ironscan: SDK-проба 37777 (DVRIP Realm 0xa001) по
-// прямым целям, серийник/модель/прошивка из ответа. Формат целей: список
-// IP/хостов (UTF-16 с BOM понимается), CIDR/диапазоны расширяются.
+// runHeadlessIronScan — ironscan: dhscp-проба 37777 (hello + 0xa4:0x07
+// серийник + 0xa4:0x0b модель, прошивка 0xa4:0x08). Формат целей: masscan
+// -oG («Discovered open port 37777/tcp on IP»), IP, IP:port, CIDR,
+// диапазоны — UTF-16 с BOM понимается; порядок скана псевдослучайный.
 func runHeadlessIronScan(cfg ui.Settings, inFile, outFile string, threads, port int,
 	progress func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
 	targets, terr := ironscan.LoadTargets(inFile)
 	if terr != nil {
 		// файла нет — может, одиночная цель прямо в -i
 		if t := strings.TrimSpace(inFile); t != "" && !strings.ContainsAny(t, " 	") {
-			targets = []string{t}
+			targets = ironscan.ParseTarget(t)
 		} else {
 			out("[!] err: входной файл: %v", terr)
 			return 2
 		}
-	}
-	// CIDR/диапазоны в списке — разворачиваем
-	expandable := false
-	for _, t := range targets {
-		if strings.ContainsAny(t, "/-") {
-			expandable = true
-			break
-		}
-	}
-	if expandable {
-		var expanded []string
-		for _, t := range targets {
-			_, ch, rerr := ipRangeStream(t)
-			if rerr != nil {
-				expanded = append(expanded, t)
-				continue
-			}
-			for ip := range ch {
-				expanded = append(expanded, ip)
-			}
-		}
-		targets = expanded
 	}
 	if len(targets) == 0 {
 		out("[!] err: целей нет")
@@ -368,118 +345,6 @@ func runHeadlessIronScan(cfg ui.Settings, inFile, outFile string, threads, port 
 		return 130
 	}
 	return 0
-}
-
-// ipRangeStream — распарсить вход ipscan и стримить IP в канал.
-// Форматы: файл со строками-диапазонами (или одна строка в -i):
-//
-//	192.168.1.0/24             CIDR
-//	192.168.1.5-192.168.1.40   диапазон целиком
-//	192.168.1.5-40             диапазон последнего октета
-//	192.168.1.5                одиночный адрес
-func ipRangeStream(inFile string) (int64, <-chan string, error) {
-	var lines []string
-	if _, err := os.Stat(inFile); err == nil {
-		data, rerr := os.ReadFile(inFile)
-		if rerr != nil {
-			return 0, nil, rerr
-		}
-		for _, l := range strings.Split(string(data), "\n") {
-			if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
-				lines = append(lines, l)
-			}
-		}
-	} else if t := strings.TrimSpace(inFile); t != "" {
-		lines = []string{t}
-	}
-	if len(lines) == 0 {
-		return 0, nil, fmt.Errorf("диапазонов нет (CIDR / a.b.c.d-e / a.b.c.d-x / одиночный IP)")
-	}
-
-	type seg struct {
-		start, end uint32
-	}
-	var segs []seg
-	var total int64
-	const capMax = int64(16 << 20)
-	for _, l := range lines {
-		switch {
-		case strings.Contains(l, "/"):
-			_, ipnet, err := net.ParseCIDR(l)
-			if err != nil {
-				return 0, nil, fmt.Errorf("CIDR %q: %w", l, err)
-			}
-			ones, _ := ipnet.Mask.Size()
-			s := binary.BigEndian.Uint32(ipnet.IP.To4())
-			var e uint32
-			if ones <= 0 {
-				s, e = 0, 0xffffffff
-			} else if ones >= 32 {
-				e = s
-			} else {
-				e = s | ((1 << (32 - ones)) - 1)
-			}
-			segs = append(segs, seg{s, e})
-			total += int64(e - s + 1)
-		case strings.Contains(l, "-") && strings.Count(l, ".") >= 6:
-			parts := strings.SplitN(l, "-", 2)
-			a := net.ParseIP(strings.TrimSpace(parts[0])).To4()
-			b := net.ParseIP(strings.TrimSpace(parts[1])).To4()
-			if a == nil || b == nil {
-				return 0, nil, fmt.Errorf("диапазон %q: плохой IP", l)
-			}
-			s := binary.BigEndian.Uint32(a)
-			e := binary.BigEndian.Uint32(b)
-			if e < s {
-				return 0, nil, fmt.Errorf("диапазон %q: конец раньше начала", l)
-			}
-			segs = append(segs, seg{s, e})
-			total += int64(e - s + 1)
-		case strings.Contains(l, "-"):
-			parts := strings.SplitN(l, "-", 2)
-			base := net.ParseIP(strings.TrimSpace(parts[0])).To4()
-			if base == nil {
-				return 0, nil, fmt.Errorf("диапазон %q: плохой IP", l)
-			}
-			x, err := strconv.Atoi(strings.TrimSpace(parts[1]))
-			if err != nil {
-				return 0, nil, fmt.Errorf("диапазон %q: %w", l, err)
-			}
-			s := binary.BigEndian.Uint32(base)
-			e := (s & 0xffffff00) | uint32(x)
-			if e < s {
-				return 0, nil, fmt.Errorf("диапазон %q: конец раньше начала", l)
-			}
-			segs = append(segs, seg{s, e})
-			total += int64(e - s + 1)
-		default:
-			ip := net.ParseIP(l).To4()
-			if ip == nil {
-				return 0, nil, fmt.Errorf("плохой адрес %q", l)
-			}
-			segs = append(segs, seg{binary.BigEndian.Uint32(ip), binary.BigEndian.Uint32(ip)})
-			total++
-		}
-	}
-	if total > capMax {
-		return 0, nil, fmt.Errorf("диапазон слишком велик (%d адресов) — режь на части", total)
-	}
-
-	ch := make(chan string, 4096)
-	go func() {
-		defer close(ch)
-		for _, g := range segs {
-			for v := g.start; ; v++ {
-				ip := make(net.IP, 4)
-				binary.BigEndian.PutUint32(ip, v)
-				ch <- ip.String()
-				if v == g.end {
-					break
-				}
-			}
-		}
-	}()
-	return total, ch, nil
 }
 
 // headlessBanner — баннер + автоапдейт: есть релиз свежее — вопрос y/n,

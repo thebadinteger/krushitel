@@ -1,10 +1,14 @@
-// Package ironscan — IP→serial DVRIP scanner (порт 37777). Портирован из
-// ironscan-src + dahua-info.py:
+// Package ironscan — IP→serial сканер Dahua (TCP 37777), база — dhscp
+// (github.com/thebadinteger/dhscp, MIT):
 //
-//	probe 0xa001 (32 байта, magic tail a1aa) → ответ
-//	  → серийник из строки «Realm:Login to <SN>» (regex — fallback)
-//	→ модель: DVRIP-команда 0x0b (0xa4-пакет)
-//	→ прошивка: DVRIP-команда 0x08 (best-effort)
+//	одним куском: hello (a0 05 00 60, magic tail a1aa) + 0xa4:0x07 (серийник)
+//	+ 0xa4:0x0b (модель) → 3 фрейма: ack, серийник, модель; прошивка —
+//	0xa4:0x08 тем же коннектом (best-effort)
+//
+// Вход: masscan -oG («Discovered open port 37777/tcp on 1.2.3.4» — tcp/udp
+// без разницы), IP, IP:port, CIDR, диапазоны a.b.c.d-e.f.g.h и a.b.c.d-x.
+// Порядок скана псевдослучайный: перестановка Фейстеля по всему списку
+// (как blackrock в masscan), детерминирована Options.Seed (0 = от времени).
 package ironscan
 
 import (
@@ -14,9 +18,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math/bits"
 	"net"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,8 +37,10 @@ var (
 	// reHexJunk — md5-подобный мусор из Realm (32 lowercase hex), бывает
 	// склеен с настоящим серийником: e3597da4…94K0043FPBQ0635A.
 	reHexJunk = regexp.MustCompile(`^[0-9a-f]{16,}|[0-9a-f]{16,}$`)
-	reModel   = regexp.MustCompile(`(?:IPC|NVR|HCVR|DH)-[A-Z0-9\-]+`)
 )
+
+// maxRangeIPs — потолок разворота одного диапазона/CIDR (как в dhscp).
+const maxRangeIPs = 5_000_000
 
 // pickSerial — вытаскивает первый структурно валидный серийник из строки.
 // Пустой результат — серийника тут нет.
@@ -46,9 +54,9 @@ func pickSerial(s string) string {
 	return ""
 }
 
-// SanitizeSerial — качественная выборка серийника из сырой строки (Realm,
-// строка serials-файла). Режет «;модель», lowercase-hex мусор, проверяет
-// структуру. Пустая строка — это не серийник.
+// SanitizeSerial — качественная выборка серийника из сырой строки (фрейм
+// 0xa4:0x07, строка serials-файла). Режет «;модель», lowercase-hex мусор,
+// проверяет структуру. Пустая строка — это не серийник.
 func SanitizeSerial(raw string) string {
 	s := strings.TrimSpace(raw)
 	if i := strings.IndexByte(s, ';'); i >= 0 {
@@ -88,6 +96,9 @@ type Options struct {
 	Timeout     time.Duration
 	Concurrency int
 	Retries     int
+	// Seed сид перестановки Фейстеля: одинаковый сид = одинаковый порядок
+	// скана (как --seed в masscan). 0 = сид от времени.
+	Seed int64
 }
 
 // Result — итог одного проба.
@@ -102,73 +113,64 @@ type Result struct {
 // Ok — проб дал серийник.
 func (r Result) Ok() bool { return r.Serial != "" }
 
-// generateProbe — 32-байтовый DVRIP Realm Request:
-// [0-1] 0xa001, [2-23] нули, [24-31] Dahua magic tail (как в dahua-info.py:
-// struct.pack('>I', 0xa0010000) + zeros + struct.pack('>Q', 0x050201010000a1aa)).
-func generateProbe() []byte {
-	header := make([]byte, 32)
-	header[0] = 0xa0
-	header[1] = 0x01
-	copy(header[24:32], []byte{0x05, 0x02, 0x01, 0x01, 0x00, 0x00, 0xa1, 0xaa})
-	return header
+// LogHook — лог-приёмник (сид/порядок скана и т.п.; nil = тихо).
+var LogHook func(format string, args ...any)
+
+// hello — dhscp-проба: 0xa0 0x05 0x00 0x60 + клиентский вер-блок, magic tail.
+var hello = []byte{
+	0xa0, 0x05, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00,
+	0xc4, 0xa3, 0xaf, 0x48, 0x99, 0x56, 0xb6, 0xb4,
+	0x70, 0x02, 0x64, 0x9a, 0xfa, 0x55, 0x24, 0x04,
+	0x05, 0x02, 0x00, 0x01, 0x00, 0x00, 0xa1, 0xaa,
 }
 
-// dvripCmd — команда 0xa4 с опкодом (dahua-info.py dvrip_cmd):
-// 0xa4, 0, code, 0 (LE u32 x4) + 16 нулей → ответ: 32-байтовый заголовок,
-// длина payload — u16 в bytes[4:6] (НЕ u32: на части камер байты [6:8]
-// не нулевые — сессия/флаги; u32-чтение давало мусорную длину, dvripCmd
-// отдавал nil и модель терялась), payload строкой до \x00.
-func dvripCmd(conn net.Conn, code uint32) []byte {
+// command — 32-байтовый 0xa4-syscall: тип в [0], опкод в [8].
+func command(commandType, commandID byte) []byte {
 	pkt := make([]byte, 32)
-	binary.LittleEndian.PutUint32(pkt[0:4], 0xa4)
-	binary.LittleEndian.PutUint32(pkt[8:12], code)
-	if _, err := conn.Write(pkt); err != nil {
-		return nil
-	}
-
-	hdr := make([]byte, 32)
-	if _, err := io.ReadFull(conn, hdr); err != nil {
-		return nil
-	}
-	length := int(binary.LittleEndian.Uint16(hdr[4:6])) // dahua-info.py: '<H'
-	if length == 0 || length > 64*1024 {
-		return nil
-	}
-	payload := make([]byte, length)
-	if _, err := io.ReadFull(conn, payload); err != nil {
-		return payload[:0]
-	}
-	return payload
+	pkt[0] = commandType
+	pkt[8] = commandID
+	return pkt
 }
 
-func nullTerm(b []byte) string {
-	if i := indexByte(b, 0); i >= 0 {
-		b = b[:i]
+// readFrame — фрейм DHIP: 32-байтовый заголовок, длина payload — u16 LE
+// в [4:6] (НЕ u32: на части камер байты [6:8] не нулевые — сессия/флаги).
+func readFrame(conn net.Conn) ([]byte, error) {
+	header := make([]byte, 32)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return nil, err
 	}
-	return strings.TrimSpace(string(b))
+	bodyLen := int(binary.LittleEndian.Uint16(header[4:6]))
+	if bodyLen > 1024*1024 {
+		return nil, fmt.Errorf("response body too large")
+	}
+	body := make([]byte, bodyLen)
+	if _, err := io.ReadFull(conn, body); err != nil {
+		return nil, err
+	}
+	return body, nil
 }
 
-func indexByte(b []byte, c byte) int {
-	for i := range b {
-		if b[i] == c {
-			return i
-		}
+func cleanValue(body []byte) string {
+	return strings.TrimSpace(strings.TrimRight(string(body), "\x00"))
+}
+
+func timeoutOrErr(err error) string {
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		return "timeout"
 	}
-	return -1
+	return err.Error()
 }
 
 // probeDevice — проб с ретраями. Отмена по ctx: до попытки, между
-// ретраями и прямо в dial.
+// ретраями и прямо в dial. refused (RST) — терминален: путь жив,
+// порт закрыт, ретраить бессмысленно.
 func probeDevice(ctx context.Context, target string, port int, timeout time.Duration, retries int) Result {
-	addr := fmt.Sprintf("%s:%d", target, port)
-	probe := generateProbe()
-
 	var lastErr string
 	for attempt := 0; attempt <= retries; attempt++ {
 		if ctx.Err() != nil {
 			return Result{Target: target, Err: "cancelled"}
 		}
-		r := tryConnect(ctx, addr, probe, timeout)
+		r := tryConnect(ctx, target, port, timeout)
 		if r.Err == "" {
 			r.Target = target
 			return r
@@ -188,27 +190,20 @@ func probeDevice(ctx context.Context, target string, port int, timeout time.Dura
 	return Result{Target: target, Err: lastErr}
 }
 
-func tryConnect(ctx context.Context, addr string, probe []byte, timeout time.Duration) Result {
-	if ironWait(ctx) != nil {
-		return Result{Err: "cancelled"}
+func tryConnect(ctx context.Context, target string, port int, timeout time.Duration) Result {
+	addr := target
+	if _, _, err := net.SplitHostPort(target); err != nil {
+		addr = net.JoinHostPort(target, strconv.Itoa(port))
 	}
-	dialStart := time.Now()
+
 	d := net.Dialer{Timeout: timeout}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		if strings.Contains(err.Error(), "connection refused") {
-			ironRecord(ironResRefused, 0)
 			return Result{Err: "refused"}
-		}
-		if ne, ok := err.(net.Error); ok && ne.Timeout() {
-			ironRecord(ironResTimeout, 0)
-		} else {
-			// не refused и не таймаут — локальная беда (буферы/маршрут)
-			ironRecord(ironResLocalErr, 0)
 		}
 		return Result{Err: err.Error()}
 	}
-	dialRTT := time.Since(dialStart)
 	defer conn.Close()
 
 	// Отмена: немедленный дедлайн будит блокирующий read при ctx.Done,
@@ -216,191 +211,166 @@ func tryConnect(ctx context.Context, addr string, probe []byte, timeout time.Dur
 	stop := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Now()) })
 	defer stop()
 
+	return probeConn(conn, timeout)
+}
+
+// probeConn — dhscp-проба по живому коннекту: burst 96 байт (hello +
+// серийник 0xa4:0x07 + модель 0xa4:0x0b) одним куском — один RTT, потом
+// прошивка 0xa4:0x08 тем же коннектом (best-effort, как в dahua-info.py).
+func probeConn(conn net.Conn, timeout time.Duration) Result {
 	if tc, ok := conn.(*net.TCPConn); ok {
 		tc.SetNoDelay(true)
 	}
 	conn.SetDeadline(time.Now().Add(timeout))
 
-	if _, err = conn.Write(probe); err != nil {
+	burst := make([]byte, 0, 96)
+	burst = append(burst, hello...)
+	burst = append(burst, command(0xa4, 0x07)...)
+	burst = append(burst, command(0xa4, 0x0b)...)
+	if _, err := conn.Write(burst); err != nil {
 		return Result{Err: err.Error()}
 	}
 
-	hdr := make([]byte, 32)
-	if _, err = io.ReadFull(conn, hdr); err != nil {
-		if ne, ok := err.(net.Error); ok && ne.Timeout() {
-			ironRecord(ironResTimeout, 0)
-			return Result{Err: "timeout"}
-		}
-		ironRecord(ironResLocalErr, 0)
-		return Result{Err: err.Error()}
+	// фрейм 1 — ack hello, дренится
+	if _, err := readFrame(conn); err != nil {
+		return Result{Err: timeoutOrErr(err)}
 	}
-
-	ironRecord(ironResOK, dialRTT)
-
-	var response []byte
-	if hdr[0] == 0xb0 && (hdr[1] == 0x00 || hdr[1] == 0x01) || hdr[0] == 0xf6 {
-		// длина — u16 [4:6], как в dvrip_cmd dahua-info.py; обрыв payload
-		// по таймауту не валим — парсим что пришло (питон читает до тишины)
-		payloadLen := int(binary.LittleEndian.Uint16(hdr[4:6]))
-		if payloadLen > 0 {
-			payload := make([]byte, payloadLen)
-			if _, err = io.ReadFull(conn, payload); err != nil && err != io.EOF {
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					// частичный ответ лучше пустого
-				} else {
-					return Result{Err: err.Error()}
-				}
-			}
-			response = append(hdr, payload...)
-		} else {
-			response = hdr
-		}
-	} else {
-		// неизвестный заголовок — читаем до тишины короткими таймаутами
-		// (dahua-info.py: recv-цикл с 0.3s). Один Read терял хвосты
-		// многосегментных ответов — с ними улетали серийник и модель.
-		buf := make([]byte, 4096)
-		for {
-			conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-			n, rerr := conn.Read(buf)
-			if n > 0 {
-				response = append(response, buf[:n]...)
-			}
-			if rerr != nil {
-				break
-			}
-		}
+	// фрейм 2 — серийник
+	serialBody, err := readFrame(conn)
+	if err != nil {
+		return Result{Err: timeoutOrErr(err)}
 	}
-
-	res := parseResponse(response)
-
-	// серийник не найден в probe-ответе — пробуем уточнить модель/прошивку
-	// и fallback-regex только по leftovers
-	if res.Serial == "" {
-		return res
-	}
-
-	// модель по 0x0b, прошивка по 0x08 (dahua-info.py)
-	conn.SetDeadline(time.Now().Add(timeout))
-	if raw := dvripCmd(conn, 0x0b); len(raw) > 0 {
-		if m := nullTerm(raw); m != "" {
-			res.Model = m
-		}
-	}
-	conn.SetDeadline(time.Now().Add(timeout))
-	if raw := dvripCmd(conn, 0x08); len(raw) > 0 {
-		if fw := nullTerm(raw); fw != "" {
-			res.Firmware = fw
-		}
-	}
-
-	return res
-}
-
-func parseResponse(response []byte) Result {
-	var serial, model string
-
-	// точный источник серийника (dahua-info.py): «Realm:Login to <SN>»
-	payload := response
-	if len(payload) > 32 {
-		payload = payload[32:]
-	}
-	for _, line := range strings.Split(string(payload), "\n") {
-		line = strings.TrimSpace(strings.TrimRight(line, "\r"))
-		if strings.HasPrefix(line, "Realm:Login to ") {
-			serial = SanitizeSerial(line[len("Realm:Login to "):])
-			break
-		}
-	}
-	// regex fallback по всему ответу
-	if serial == "" {
-		serial = pickSerial(string(response))
-	}
-	// модель regex'ом — только если 0x0b не даст
-	if m := reModel.Find(response); m != nil {
-		model = string(m)
-	}
-
+	serial := SanitizeSerial(cleanValue(serialBody))
 	if serial == "" {
 		return Result{Err: "no serial"}
 	}
-	return Result{Serial: serial, Model: model}
+
+	// фрейм 3 — модель (best-effort: на части прошивок не приходит)
+	var model string
+	if body, err := readFrame(conn); err == nil {
+		model = cleanValue(body)
+	}
+
+	// прошивка 0xa4:0x08 тем же коннектом (best-effort, как в dahua-info.py)
+	conn.SetDeadline(time.Now().Add(timeout))
+	var firmware string
+	if _, err := conn.Write(command(0xa4, 0x08)); err == nil {
+		if body, err := readFrame(conn); err == nil {
+			firmware = cleanValue(body)
+		}
+	}
+
+	return Result{Serial: serial, Model: model, Firmware: firmware}
 }
 
-// Run исполняет скан, onResult вызывается для каждого завершённого проба
-// (сериализовано под мьютексом). Отмена по ctx: воркеры прекращают брать
-// новые цели и бросают начатые пробы, Run возвращает nil при отмене.
-func Run(ctx context.Context, opts Options, onResult func(Result)) error {
-	if len(opts.Targets) == 0 {
-		return fmt.Errorf("no targets")
-	}
-	if opts.Port == 0 {
-		opts.Port = 37777
-	}
-	if opts.Timeout == 0 {
-		opts.Timeout = 5 * time.Second
-	}
-	if opts.Concurrency < 1 {
-		opts.Concurrency = 1
-	}
-	if opts.Retries < 0 {
-		opts.Retries = 0
-	}
+// ── вход: masscan -oG / IP / IP:port / CIDR / диапазоны ─────────────
 
-	workers := opts.Concurrency
-	if workers > len(opts.Targets) {
-		workers = len(opts.Targets)
+// parseRangeIPs — «a.b.c.d-e.f.g.h» или «a.b.c.d-x» (последний октет).
+// start>end разворачивается (как в dhscp). Потолок maxRangeIPs.
+func parseRangeIPs(rangeStr string) []string {
+	parts := strings.SplitN(rangeStr, "-", 2)
+	startIP := net.ParseIP(strings.TrimSpace(parts[0])).To4()
+	if startIP == nil {
+		return nil
 	}
+	var endVal uint32
+	if endIP := net.ParseIP(strings.TrimSpace(parts[1])).To4(); endIP != nil {
+		endVal = binary.BigEndian.Uint32(endIP)
+	} else if octet, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil && octet >= 0 && octet <= 255 {
+		endVal = binary.BigEndian.Uint32(startIP)&0xffffff00 | uint32(octet)
+	} else {
+		return nil
+	}
+	startVal := binary.BigEndian.Uint32(startIP)
+	if startVal > endVal {
+		startVal, endVal = endVal, startVal
+	}
+	count := int64(endVal-startVal+1)
+	if count > maxRangeIPs {
+		count = maxRangeIPs
+	}
+	res := make([]string, 0, count)
+	ip := make(net.IP, 4)
+	for v := startVal; v <= startVal+uint32(count)-1; v++ {
+		binary.BigEndian.PutUint32(ip, v)
+		res = append(res, ip.String())
+	}
+	return res
+}
 
-	// AIMD-губернатор: старт с безопасного минимума, предел канала/роутера
-	// находит сам и держится у него
-	ironPPS = ironStartPPS
-	limiter := newIronLimiter(ironStartPPS)
-	go governorLoop(ctx, limiter, func(f string, a ...any) {
-		if LogHook != nil {
-			LogHook(fmt.Sprintf(f, a...))
-		}
-	})
-	ironLimiterSet(limiter)
+// parseCIDRIPs — разворот CIDR, потолок maxRangeIPs (как в dhscp).
+func parseCIDRIPs(cidrStr string) []string {
+	_, ipnet, err := net.ParseCIDR(cidrStr)
+	if err != nil || ipnet == nil || ipnet.IP.To4() == nil {
+		return nil
+	}
+	startVal := binary.BigEndian.Uint32(ipnet.IP.To4())
+	maskVal := binary.BigEndian.Uint32(ipnet.Mask)
+	endVal := startVal | (^maskVal)
+	count := int64(endVal - startVal + 1)
+	if count > maxRangeIPs {
+		count = maxRangeIPs
+	}
+	res := make([]string, 0, count)
+	ip := make(net.IP, 4)
+	for v := startVal; v <= startVal+uint32(count)-1; v++ {
+		binary.BigEndian.PutUint32(ip, v)
+		res = append(res, ip.String())
+	}
+	return res
+}
 
-	jobs := make(chan string)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for t := range jobs {
-				if ctx.Err() != nil {
-					continue // дренируем канал, не пробуя
-				}
-				r := probeDevice(ctx, t, opts.Port, opts.Timeout, opts.Retries)
-				if ctx.Err() != nil {
-					continue // отменили в середине пробы — результат не факт
-				}
-				mu.Lock()
-				onResult(r)
-				mu.Unlock()
+// appendTarget — классификация строки входа. Порядок важен: masscan-строка
+// содержит и «/», и дефисы, разбирается первой. Неопознанное (хосты и
+// мусор) проходит как есть — диал сам разберётся.
+func appendTarget(items []string, line string) []string {
+	// masscan -oG: «Discovered open port 37777/tcp on 1.2.3.4»
+	if f := strings.Fields(line); len(f) >= 6 &&
+		strings.EqualFold(f[0], "discovered") &&
+		strings.EqualFold(f[1], "open") &&
+		strings.EqualFold(f[2], "port") {
+		if port, err := strconv.Atoi(strings.SplitN(f[3], "/", 2)[0]); err == nil && port > 0 && port <= 65535 {
+			if net.ParseIP(f[5]) != nil {
+				return append(items, net.JoinHostPort(f[5], strconv.Itoa(port)))
 			}
-		}()
+		}
+		return append(items, line)
 	}
-
-feed:
-	for _, t := range opts.Targets {
-		select {
-		case <-ctx.Done():
-			break feed
-		case jobs <- t:
+	// ip:port
+	if host, portStr, err := net.SplitHostPort(line); err == nil {
+		if port, err := strconv.Atoi(portStr); err == nil && port > 0 && port <= 65535 && net.ParseIP(host) != nil {
+			return append(items, net.JoinHostPort(host, portStr))
 		}
 	}
-	close(jobs)
-	wg.Wait()
-	return nil
+	// CIDR
+	if strings.Contains(line, "/") {
+		if ips := parseCIDRIPs(line); len(ips) > 0 {
+			return append(items, ips...)
+		}
+	}
+	// диапазон
+	if strings.Contains(line, "-") {
+		if ips := parseRangeIPs(line); len(ips) > 0 {
+			return append(items, ips...)
+		}
+	}
+	// одиночный IP
+	if net.ParseIP(line) != nil {
+		return append(items, line)
+	}
+	return append(items, line)
 }
 
-// LoadTargets читает список IP/хостов: пропускает пустые строки и # комменты,
-// понимает UTF-16 файлы с BOM (как dahua-info.py).
+// ParseTarget — классификация одной строки входа без файла (инлайн -i):
+// masscan-строка, ip:port, CIDR, диапазон, IP; неопознанное — как есть.
+func ParseTarget(line string) []string {
+	return appendTarget(nil, line)
+}
+
+// LoadTargets читает файл целей: masscan -oG, IP, IP:port, CIDR, диапазоны.
+// Пропускает пустые строки и # комменты, понимает UTF-16 файлы с BOM.
+// Диапазоны/CIDR разворачиваются (потолок maxRangeIPs на токен); порядок
+// НЕ случайный — его делает Run своей LCG-перестановкой.
 func LoadTargets(filepath string) ([]string, error) {
 	raw, err := os.ReadFile(filepath)
 	if err != nil {
@@ -429,8 +399,137 @@ func LoadTargets(filepath string) ([]string, error) {
 	for scanner.Scan() {
 		line := strings.TrimSpace(strings.Trim(scanner.Text(), "\r\n\x00"))
 		if line != "" && !strings.HasPrefix(line, "#") {
-			targets = append(targets, line)
+			targets = appendTarget(targets, line)
 		}
 	}
 	return targets, scanner.Err()
+}
+
+// ── перестановка Фейстеля (порядок скана, как blackrock в masscan) ──
+
+// ironPerm — биекция [0,n) → [0,n): равнополый Фейстель над доменом
+// 2^(2c) ≥ n + cycle-walking (пока значение ≥ n — применяем снова).
+// LCG тут не годится: полный цикл x'=(ax+b) mod n требует условий Кнута
+// по всем простым делителям n, а перестановка Фейстеля честная при любом n.
+type ironPerm struct {
+	n     uint64 // размер выходного пространства
+	dom   uint64 // размер домена 2^(2c)
+	c     uint   // битов в каждой половине
+	rmask uint64
+	seed  uint64
+}
+
+func newPerm(n int64, seed uint64) ironPerm {
+	b := bits.Len64(uint64(n) - 1)
+	c := uint(b+1) / 2
+	return ironPerm{
+		n:     uint64(n),
+		dom:   uint64(1) << (2 * c),
+		c:     c,
+		rmask: uint64(1)<<c - 1,
+		seed:  seed,
+	}
+}
+
+// f — раундовая функция: splitmix64-финализатор с сидом и номером раунда.
+func (p ironPerm) f(r uint64, round uint) uint64 {
+	h := r ^ p.seed ^ (uint64(round)*0x9E3779B97F4A7C15 + 1)
+	h ^= h >> 33
+	h *= 0xff51afd7ed558ccd
+	h ^= h >> 33
+	h *= 0xc4ceb9fe1a85ec53
+	h ^= h >> 33
+	return h
+}
+
+// perm — биекция на домене: 4 инвертируемых раунда Фейстеля.
+func (p ironPerm) perm(x uint64) uint64 {
+	l := (x >> p.c) & p.rmask
+	r := x & p.rmask
+	for round := uint(0); round < 4; round++ {
+		l, r = r, l^(p.f(r, round)&p.rmask)
+	}
+	return l<<p.c | r
+}
+
+// at — k-й элемент перестановки [0,n).
+func (p ironPerm) at(k int64) int64 {
+	v := p.perm(uint64(k))
+	for v >= p.n {
+		v = p.perm(v)
+	}
+	return int64(v)
+}
+
+// Run исполняет скан, onResult вызывается для каждого завершённого проба
+// (сериализовано под мьютексом). Отмена по ctx: воркеры прекращают брать
+// новые цели и бросают начатые пробы, Run возвращает nil при отмене.
+// Порядок целей — перестановка Фейстеля по всему списку (как blackrock
+// в masscan): детерминирована Options.Seed, 0 = сид от времени.
+func Run(ctx context.Context, opts Options, onResult func(Result)) error {
+	if len(opts.Targets) == 0 {
+		return fmt.Errorf("no targets")
+	}
+	if opts.Port == 0 {
+		opts.Port = 37777
+	}
+	if opts.Timeout == 0 {
+		opts.Timeout = 5 * time.Second
+	}
+	if opts.Concurrency < 1 {
+		opts.Concurrency = 1
+	}
+	if opts.Retries < 0 {
+		opts.Retries = 0
+	}
+
+	workers := opts.Concurrency
+	if workers > len(opts.Targets) {
+		workers = len(opts.Targets)
+	}
+
+	n := int64(len(opts.Targets))
+	seed := opts.Seed
+	if seed == 0 {
+		seed = time.Now().UnixNano()
+	}
+	perm := newPerm(n, uint64(seed))
+	if LogHook != nil {
+		LogHook("[iron] seed=%d targets=%d (порядок Фейстель)", seed, n)
+	}
+
+	jobs := make(chan string)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for t := range jobs {
+				if ctx.Err() != nil {
+					continue // дренируем канал, не пробуя
+				}
+				r := probeDevice(ctx, t, opts.Port, opts.Timeout, opts.Retries)
+				if ctx.Err() != nil {
+					continue // отменили в середине пробы — результат не факт
+				}
+				mu.Lock()
+				onResult(r)
+				mu.Unlock()
+			}
+		}()
+	}
+
+feed:
+	for k := int64(0); k < n; k++ {
+		select {
+		case <-ctx.Done():
+			break feed
+		case jobs <- opts.Targets[perm.at(k)]:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	return nil
 }
