@@ -28,8 +28,6 @@ var (
 	// reDahua — серийник Dahua: префикс 4-7 символов + маркер P?? (PAx/PBx/…,
 	// новые XVR идут с PBQ) + хвост. Рабочая длина 14-15.
 	reDahua = regexp.MustCompile(`[A-Z0-9]{4,7}P[A-Z][A-Z][A-Z0-9]{3,6}`)
-	// reAmcrest — 18-символьные серийники Amcrest (AMC…PTB…).
-	reAmcrest = regexp.MustCompile(`AMC[A-Z0-9]{6}P[A-Z][A-Z][A-Z0-9]{3,6}`)
 	// reHexJunk — md5-подобный мусор из Realm (32 lowercase hex), бывает
 	// склеен с настоящим серийником: e3597da4…94K0043FPBQ0635A.
 	reHexJunk = regexp.MustCompile(`^[0-9a-f]{16,}|[0-9a-f]{16,}$`)
@@ -44,9 +42,6 @@ func pickSerial(s string) string {
 		if len(m) >= 14 && len(m) <= 15 {
 			return m
 		}
-	}
-	if m := reAmcrest.FindString(up); len(m) == 18 {
-		return m
 	}
 	return ""
 }
@@ -78,8 +73,8 @@ func SanitizeSerialBytes(raw []byte) string {
 	if i := bytes.IndexByte(s, ';'); i >= 0 {
 		s = bytes.TrimSpace(s[:i])
 	}
-	// короче 14 — валидного серийника тут нет точно (Dahua 14-15, Amcrest 18),
-	// regex не гоняем.
+	// короче 14 — валидного серийника Dahua тут нет точно (рабочая длина
+	// 14-15), regex не гоняем.
 	if len(s) < 14 {
 		return ""
 	}
