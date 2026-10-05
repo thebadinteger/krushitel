@@ -64,3 +64,13 @@ uzhhorod*/
 # антикамшот: дампы конфигов (данные камер, в git не светить)
 cfg_dump.json
 dumpcfg_*.json
+
+# нерелевантное репо: скрипты, сторонние модули, локальные артефакты
+*.sh
+*.ps1
+*.cmd
+*.py
+dhscp/
+myapp_*
+dvr_dump.json
+.zcodeignore
