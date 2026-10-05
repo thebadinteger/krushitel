@@ -613,6 +613,7 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 		Resume:      resume,
 		Destructive: cfg.Destructive,
 		WipeUsers:   cfg.WipeUsers,
+		AntiCumShot: cfg.AntiCumShot,
 	}, tp, events)
 
 	close(doneEvents)

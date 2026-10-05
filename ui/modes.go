@@ -189,6 +189,7 @@ func launchExploitRun(m *model, inFile, outDir string, threads int, prefixes, di
 		Resume:      resume,
 		Destructive: cfg.Destructive,
 		WipeUsers:   cfg.WipeUsers,
+		AntiCumShot: cfg.AntiCumShot,
 	}
 
 	go func() {

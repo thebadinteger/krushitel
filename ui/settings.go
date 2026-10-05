@@ -24,6 +24,11 @@ type Settings struct {
 	// и активного логина.
 	WipeUsers bool `json:"wipe_users"`
 
+	// AntiCumShot — анти-камшот: откат белого экрана (конкурент ставит
+	// Brightness/Gamma=100 на VideoColor[0][0]) к 50 с read-back verify.
+	// Чинится при каждом живом коннекте + финальный проход по results.csv.
+	AntiCumShot bool `json:"antiCumShot"`
+
 	// Последний заход: предзаполняем формы, чтобы не переписывать
 	// targets.txt каждый раз (просьба из тг-чата).
 	LastInput   string `json:"last_input"`
