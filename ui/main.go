@@ -15,7 +15,6 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"krushitel/exploit"
-	"krushitel/fwd"
 	"krushitel/i18n"
 	"krushitel/scanner"
 	"krushitel/update"
@@ -54,8 +53,8 @@ type model struct {
 	setCur   int          // настройки
 	greetCur int          // приветствие: выбор языка
 
-	form     *formState
-	run      *runState
+	form       *formState
+	run        *runState
 	msgLines   []string
 	msgPanel   string
 	quitting   bool
@@ -674,19 +673,17 @@ const (
 	rowSnaps = iota
 	rowXML
 	rowTitles
-	rowPreflight // пре-флайт перед боем: глухая камера → SKIP без полного сценария
-	rowEditChan  // ChannelTitle (имя канала), огр 32 симв.
-	rowEditCT0   // OSD слот 1 (CustomTitle[0]), огр 22 симв.
-	rowEditCT1   // OSD слот 2
-	rowEditCT2   // OSD слот 3
-	rowEditCT3   // OSD слот 4
-	rowDummy     // dummy-креды: ввод login:passwd одной строкой
-	rowDebug     // лог-режим: дампы протокола облака в ленту логов
-	rowForceRelay // апп-диалект релея сразу (dh-fwd -ar)
-	rowGovernor   // губернатор скорости скана: AIMD вкл/выкл
-	rowGovCap     // ручной потолок PPS (0 = авто), цикл по Enter
-	rowDiscord    // discord rpc: вкл/выкл
-	rowLang        // язык: «язык: русский» / «language: english»
+	rowEditChan // ChannelTitle (имя канала), огр 32 симв.
+	rowEditCT0  // OSD слот 1 (CustomTitle[0]), огр 22 симв.
+	rowEditCT1  // OSD слот 2
+	rowEditCT2  // OSD слот 3
+	rowEditCT3  // OSD слот 4
+	rowDummy    // dummy-креды: ввод login:passwd одной строкой
+	rowDebug    // лог-режим: дампы протокола облака в ленту логов
+	rowGovernor // губернатор скорости скана: AIMD вкл/выкл
+	rowGovCap   // ручной потолок PPS (0 = авто), цикл по Enter
+	rowDiscord  // discord rpc: вкл/выкл
+	rowLang     // язык: «язык: русский» / «language: english»
 	rowBack
 )
 
@@ -717,7 +714,6 @@ func (m model) settingsRows() []settingsRow {
 		{fmt.Sprintf(tr("снапы (%s)"), onOff(cfg.Snaps)), rowSnaps},
 		{fmt.Sprintf(tr("autogen .xml (%s)"), onOff(cfg.XML)), rowXML},
 		{fmt.Sprintf(tr("настройки OSDChanger (%s)"), onOff(cfg.Titles)), rowTitles},
-		{fmt.Sprintf(tr("пре-флайт (%s)"), onOff(cfg.Preflight)), rowPreflight},
 	}
 	if cfg.Titles {
 		rows = append(rows,
@@ -737,7 +733,6 @@ func (m model) settingsRows() []settingsRow {
 	rows = append(rows,
 		settingsRow{tr("добавить нового юзера"), rowDummy},
 		settingsRow{fmt.Sprintf(tr("лог-режим (%s)"), onOff(cfg.Debug)), rowDebug},
-		settingsRow{fmt.Sprintf(tr("app relay сразу (%s)"), onOff(cfg.ForceAppRelay)), rowForceRelay},
 		settingsRow{fmt.Sprintf(tr("губернатор скорости (%s)"), onOff(cfg.Governor)), rowGovernor},
 		settingsRow{fmt.Sprintf(tr("потолок pps: %s"), govCapLabel(cfg.GovernorCap)), rowGovCap},
 		settingsRow{fmt.Sprintf(tr("discord rpc (%s)"), onOff(cfg.DiscordRPC)), rowDiscord},
@@ -776,9 +771,6 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case rowTitles:
 			cfg.Titles = !cfg.Titles
 			saveSettings()
-		case rowPreflight:
-			cfg.Preflight = !cfg.Preflight
-			saveSettings()
 		case rowEditChan:
 			m.openTitleEdit(0)
 			return m, textinput.Blink
@@ -799,10 +791,6 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, textinput.Blink
 		case rowDebug:
 			cfg.Debug = !cfg.Debug
-			saveSettings()
-		case rowForceRelay:
-			cfg.ForceAppRelay = !cfg.ForceAppRelay
-			fwd.ForceAppRelay = cfg.ForceAppRelay
 			saveSettings()
 		case rowGovernor:
 			cfg.Governor = !cfg.Governor

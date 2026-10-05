@@ -12,10 +12,9 @@ import (
 // Settings — как в krushitel (config.json), но без dummy-полей: тут только
 // то, что трогает UI.
 type Settings struct {
-	Snaps     bool `json:"snaps"`
-	XML       bool `json:"xml"`
-	Titles    bool `json:"titles"`
-	Preflight bool `json:"preflight"` // пре-флайт перед боем (33044/33045/39943/6117)
+	Snaps  bool `json:"snaps"`
+	XML    bool `json:"xml"`
+	Titles bool `json:"titles"`
 
 	// Destructive — разрешить деструктивные оверфлоу (CVE-2025-31700 /
 	// CVE-2017-3223): крашат auth-сервис камеры. По умолчанию выключено.
@@ -50,10 +49,6 @@ type Settings struct {
 
 	// Discord RPC (pure fun): тогл вкл/выкл, app id зашит в бинарь.
 	DiscordRPC bool `json:"discord_rpc"`
-
-	// ForceAppRelay (аналог dh-fwd -ar): сразу идти апп-диалектом релея —
-	// без 0x17 token-обмена. Для камер/релеев, где токен-канал не живёт.
-	ForceAppRelay bool `json:"force_app_relay"`
 
 	// Governor (scan mode): AIMD-губернатор UDP-скана — сам находит
 	// предел канала/роутера и держится у него. Off = максимум скорости,
@@ -95,8 +90,6 @@ func loadSettings() {
 	// Dolynk/DMSS удалены: профиль всегда smartpss, что бы ни лежало в конфиге.
 	cfg.Profile = "smartpss"
 	_ = fwd.SetProfile(cfg.Profile)
-	// -ar из dh-fwd: форс апп-диалекта на релее (глобаль fwd-пакета).
-	fwd.ForceAppRelay = cfg.ForceAppRelay
 	// Губернатор скана (scan mode): тумблер + ручной потолок PPS.
 	scanner.GovernorOn = cfg.Governor
 	scanner.GovernorCap = cfg.GovernorCap

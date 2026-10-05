@@ -50,7 +50,6 @@ func exploitForm() *formState {
 	f.addInt(tr("потоков"), defThreads)
 	f.addBool(tr("снапы?"), cfg.Snaps)
 	f.addBool("autogen .xml?", cfg.XML)
-	f.addBool(tr("пре-флайт?"), cfg.Preflight)
 	return f
 }
 
@@ -61,7 +60,6 @@ func startExploitRun(m *model) {
 	threads := m.threadsVal(2)
 	cfg.Snaps = m.form.fields[3].boolVal
 	cfg.XML = m.form.fields[4].boolVal
-	cfg.Preflight = m.form.fields[5].boolVal
 	saveSettings()
 
 	prefixes, direct, err := exploit.LoadTargetInput(inFile)
@@ -188,7 +186,6 @@ func launchExploitRun(m *model, inFile, outDir string, threads int, prefixes, di
 		CustomTexts: cfg.CustomTexts[:],
 		DummyLogin:  cfg.DummyLogin,
 		DummyPass:   cfg.DummyPass,
-		Preflight:   cfg.Preflight,
 		Resume:      resume,
 		Destructive: cfg.Destructive,
 		WipeUsers:   cfg.WipeUsers,

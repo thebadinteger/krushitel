@@ -610,7 +610,6 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 		CustomTexts: cfg.CustomTexts[:],
 		DummyLogin:  cfg.DummyLogin,
 		DummyPass:   cfg.DummyPass,
-		Preflight:   cfg.Preflight,
 		Resume:      resume,
 		Destructive: cfg.Destructive,
 		WipeUsers:   cfg.WipeUsers,
