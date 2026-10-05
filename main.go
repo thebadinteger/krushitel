@@ -1,4 +1,3 @@
-// krushitel — точка входа. Вся реализация интерфейса — в пакете ui.
 package main
 
 import (
@@ -8,20 +7,14 @@ import (
 	"strings"
 	"time"
 
-	"krushitel/ui"
-	"krushitel/update"
+	"krushitel/core/ui"
+	"krushitel/core/update"
 )
 
-// crash.log: паника вне TUI (до/после ui.Run) раньше умирала молча.
-// Пишем стек в файл рядом с бинарником + сплеш из ui-пакета.
 func main() {
 	lf, lerr := os.OpenFile("crash.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if lerr == nil {
 		defer lf.Close()
-		// fd-уровень: рантайм пишет стек паники из ЛЮБОЙ горутины в
-		// системный хендл stderr — дублируем его в файл ДО старта TUI
-		// (переменная os.Stderr тут не поможет: ui ее глушит, воркеры
-		// падают мимо recover в main).
 		redirectToCrashLog(lf)
 	}
 	defer func() {
@@ -31,7 +24,6 @@ func main() {
 			if lf != nil {
 				_, _ = lf.WriteString(msg)
 			}
-			// Причина — первая строка паники, в рамке — весь стек голанга.
 			reason := strings.TrimSpace(strings.SplitN(fmt.Sprintf("%v", r), "\n", 2)[0])
 			if reason == "" {
 				reason = "unknown (see crash.log)"
@@ -41,7 +33,6 @@ func main() {
 			os.Exit(1)
 		}
 	}()
-	// CLI-режим: любой запуск с -i/--input (или -h) идёт мимо TUI.
 	if runHeadless() {
 		return
 	}
