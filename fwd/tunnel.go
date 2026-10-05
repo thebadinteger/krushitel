@@ -93,9 +93,6 @@ var InitLimit = 32
 // StunFailHook вызывается при откате со STUN на relay.
 var StunFailHook func(serial string)
 
-// ForceAppRelay форсирует апп-диалект на релее.
-var ForceAppRelay = false
-
 // isModernAppRelayVersion проверяет, использует ли устройство/агент апп-диалект
 // (версии 5.x+, 6.x+, 7.x+). Такие агенты не поддерживают 0x17/0x19 PTCP auth,
 // а попытка запросить токен инвалидирует и травит дата-канал.
@@ -908,8 +905,9 @@ func (t *Tunnel) establish() error {
 	// PTCP через relay: SYNC, затем token-запрос (0x17 -> 0x18). Только при
 	// аллоцированном агенте — без него (dmss best-effort) пробитый прямой
 	// канал единственный data-путь, establishment идёт сразу в NAT punch.
-	// forceAppRelay (зомби-ретрай) / ForceAppRelay (дев): пропуск целиком —
-	// 0x17/0x19 на data-сокете инвалидирует канал на камерах поколения 2024+.
+	// t.forceAppRelay (auto): пропуск целиком — 0x17/0x19 на data-сокете
+	// инвалидирует канал на камерах поколения 2024+. Флаг ставится сам:
+	// версия 5.x+ в пробе/ack, token-spam, а теперь и молчаливый 0x17.
 	var sign []byte
 	if agentOK {
 		t.setStage("ptcp sync (relay)")
@@ -934,7 +932,7 @@ func (t *Tunnel) establish() error {
 		// Complete the 3-way PTCP handshake by acknowledging the relay's SYNC frame.
 		mainRemote.RequestPTCP(nil)
 
-		if !prof.noRelayAuth && !t.forceAppRelay && !ForceAppRelay {
+		if !prof.noRelayAuth && !t.forceAppRelay {
 			t.setStage("ptcp token")
 			mainRemote.RequestPTCP([]byte{
 				0x17, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -942,14 +940,19 @@ func (t *Tunnel) establish() error {
 			})
 			p, err = t.waitForPTCPToken(mainRemote, RELAY_READ_TIMEOUT)
 			if err != nil {
+				// Auto (раньше — ручной тогл ForceAppRelay): 0x17 молчит
+				// или мусорит. Токен-канала нет — значит апп-диалект
+				// (2024+) или битый агент: ре-SYNC проверяет канал и
+				// продолжаем без авторизации.
+				t.forceAppRelay = true
 				if errors.Is(err, errPTCPAppFallback) {
-					// Агент сыпет короткие SYNC-ack вместо токена —
-					// это апп-диалект (поколение 2024+): пропускаем 0x17,
-					// дальше STUN как обычно, data path через апп-паритет.
-					t.forceAppRelay = true
 					t.logf("ptcp 0x17: token spam, forcing app relay dialect")
 				} else {
-					return fmt.Errorf("ptcp 0x17: %v", err)
+					t.logf("ptcp 0x17 failed (%v) — auto: app relay dialect", err)
+					mainRemote.RequestPTCP([]byte{0x00, 0x03, 0x01, 0x00})
+					if _, serr := mainRemote.ReadPTCP(RELAY_READ_TIMEOUT); serr != nil {
+						return fmt.Errorf("ptcp app fallback sync: %v", serr)
+					}
 				}
 			} else {
 				sign = p.Body[12:]
@@ -1103,7 +1106,7 @@ func (t *Tunnel) establish() error {
 	deviceRemote.SetTimeout(deviceAckTimeout)
 
 	// Direct-путь: PTCP handshake
-	if prof.noRelayAuth || t.forceAppRelay || ForceAppRelay {
+	if prof.noRelayAuth || t.forceAppRelay {
 		t.logf("app-parity data path: SYNC only, no 0x17/0x19 auth")
 		deviceRemote.RequestPTCP([]byte{0x00, 0x03, 0x01, 0x00})
 		if _, err := deviceRemote.ReadPTCP(3 * time.Second); err != nil {
