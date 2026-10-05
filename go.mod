@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.11.6
-	github.com/thebadinteger/rtsnap v0.3.0
+	github.com/thebadinteger/rtsnap v0.4.1
 	golang.org/x/crypto v0.55.0
 	golang.org/x/sys v0.47.0
 )

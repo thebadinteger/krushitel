@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/binary"
 	"encoding/hex"
@@ -241,44 +242,6 @@ func containsJPEGEnd(data []byte) bool {
 	return false
 }
 
-func stripSnapshotGarbage(data []byte, channel int) []byte {
-	ch := byte(channel)
-	garbage1 := []byte{0x0a, ch, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00}
-	garbage2 := []byte{0xbc, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, ch}
-
-	for {
-		idx := index(data, garbage1)
-		if idx < 0 {
-			break
-		}
-		start := idx - 24
-		if start < 0 {
-			start = 0
-		}
-		end := idx + len(garbage1)
-		if end > len(data) {
-			end = len(data)
-		}
-		data = append(data[:start], data[end:]...)
-	}
-	for {
-		idx := index(data, garbage2)
-		if idx < 0 {
-			break
-		}
-		end := idx + 24
-		if end > len(data) {
-			end = len(data)
-		}
-		data = append(data[:idx], data[end:]...)
-	}
-	return data
-}
-
-func index(data, sub []byte) int {
-	return strings.Index(string(data), string(sub))
-}
-
 func (c *Client) GetSnapshot(channel int, timeout time.Duration) ([]byte, error) {
 	conn, err := c.login(timeout)
 	if err != nil {
@@ -295,43 +258,45 @@ func (c *Client) GetSnapshot(channel int, timeout time.Duration) ([]byte, error)
 		return nil, fmt.Errorf("snapshot send: %w", err)
 	}
 
-	var data []byte
-	buf := make([]byte, 32*1024)
+	var jpegData []byte
+	hdr := make([]byte, 32)
 	for {
-		n, err := conn.Read(buf)
-		if n > 0 {
-			data = append(data, buf[:n]...)
+		if _, err := io.ReadFull(conn, hdr); err != nil {
+			break
 		}
-		if err != nil {
-			if len(data) > 0 {
-				break
-			}
-			return nil, fmt.Errorf("snapshot read: %w", err)
+		pl := binary.LittleEndian.Uint32(hdr[4:8])
+		if pl == 0 {
+			break
 		}
-		if containsJPEGEnd(data) {
-			conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-			for {
-				n, err := conn.Read(buf)
-				if n > 0 {
-					data = append(data, buf[:n]...)
-				}
-				if err != nil {
-					break
-				}
-			}
+		if pl > 16*1024*1024 {
+			return nil, fmt.Errorf("snapshot chunk too large: %d", pl)
+		}
+		chunk := make([]byte, pl)
+		if _, err := io.ReadFull(conn, chunk); err != nil {
+			return nil, fmt.Errorf("snapshot chunk read: %w", err)
+		}
+		jpegData = append(jpegData, chunk...)
+		if containsJPEGEnd(jpegData) {
 			break
 		}
 	}
 
-	if len(data) >= 32 {
-		data = data[32:]
+	soi := bytes.Index(jpegData, []byte{0xFF, 0xD8})
+	if soi < 0 {
+		return nil, fmt.Errorf("snapshot: no SOI found (%d bytes)", len(jpegData))
 	}
-	data = stripSnapshotGarbage(data, channel)
+	jpegData = jpegData[soi:]
 
-	if len(data) < 100 || data[0] != 0xFF || data[1] != 0xD8 {
-		return nil, fmt.Errorf("snapshot: invalid jpeg (%d bytes)", len(data))
+	eoi := bytes.LastIndex(jpegData, []byte{0xFF, 0xD9})
+	if eoi < 0 {
+		return nil, fmt.Errorf("snapshot: no EOI found (%d bytes)", len(jpegData))
 	}
-	return data, nil
+	jpegData = jpegData[:eoi+2]
+
+	if len(jpegData) < 1000 {
+		return nil, fmt.Errorf("snapshot: invalid jpeg (%d bytes)", len(jpegData))
+	}
+	return jpegData, nil
 }
 
 type SDKUser struct {
