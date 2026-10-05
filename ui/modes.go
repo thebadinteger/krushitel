@@ -359,6 +359,7 @@ func prefixForm() *formState {
 	f.addInt(tr("порт"), 37777)
 	f.addInt(tr("потоков"), 500)
 	f.addStr(tr("выходной файл (база, без расширения)"), true, false)
+	f.addStr(tr("фильтр моделей (через запятую, пусто = все)"), false, false)
 	return f
 }
 
@@ -367,6 +368,18 @@ func startPrefixRun(m *model) {
 	port := m.form.fields[1].intVal
 	threads := m.threadsVal(2)
 	outBase := m.form.fields[3].strVal
+	filterRaw := m.form.fields[4].strVal
+
+	// парсим фильтр моделей: через запятую, uppercase, пустые куски пропускаем.
+	var modelFilters []string
+	if filterRaw != "" {
+		for _, part := range strings.Split(filterRaw, ",") {
+			p := strings.TrimSpace(part)
+			if p != "" {
+				modelFilters = append(modelFilters, strings.ToUpper(p))
+			}
+		}
+	}
 
 	var targets []string
 	if fileExists(tgt) {
@@ -447,9 +460,25 @@ func startPrefixRun(m *model) {
 			uniq = append(uniq, e)
 		}
 		mu.Unlock()
+
+		// фильтрация по модели: если фильтры заданы — оставляем только совпавших
+		filtered := uniq
+		if len(modelFilters) > 0 {
+			filtered = make([]snModel, 0, len(uniq))
+			for _, e := range uniq {
+				upper := strings.ToUpper(e.model)
+				for _, f := range modelFilters {
+					if strings.Contains(upper, f) {
+						filtered = append(filtered, e)
+						break
+					}
+				}
+			}
+		}
+
 		var prefixes []string
 		seenP := make(map[string]struct{})
-		for _, e := range uniq {
+		for _, e := range filtered {
 			if len(e.sn) < 10 {
 				continue
 			}
@@ -459,6 +488,7 @@ func startPrefixRun(m *model) {
 				prefixes = append(prefixes, p)
 			}
 		}
+		// _serials.txt — всегда все (без фильтра), чтобы данные не терялись
 		if len(uniq) > 0 {
 			lines := make([]string, 0, len(uniq))
 			for _, e := range uniq {
@@ -472,6 +502,16 @@ func startPrefixRun(m *model) {
 		}
 		if len(prefixes) > 0 {
 			_ = os.WriteFile(outBase+"_prefix.txt", []byte(strings.Join(prefixes, "\n")+"\n"), 0644)
+		}
+		// итоговое сообщение с учётом фильтра
+		if len(modelFilters) > 0 {
+			select {
+			case r.eventsCh <- fmt.Sprintf(
+				tr("[+] серийников: %d, после фильтра: %d, префиксов: %d"),
+				len(uniq), len(filtered), len(prefixes)):
+			default:
+			}
+		} else if len(prefixes) > 0 {
 			select {
 			case r.eventsCh <- fmt.Sprintf(tr("[+] серийников: %d, префиксов: %d"), len(uniq), len(prefixes)):
 			default:
