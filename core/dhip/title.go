@@ -91,6 +91,11 @@ func SetChannelTitleUserDial(dial Dialer, user, password, title string) error {
 		flatParams := make(map[string]any)
 		for ch := 0; ch < 16; ch++ {
 			flatParams[fmt.Sprintf("ChannelTitle[%d].Name", ch)] = name
+			flatParams[fmt.Sprintf("VideoWidget[%d].ChannelTitle.EncodeBlend", ch)] = true
+			flatParams[fmt.Sprintf("VideoWidget[%d].ChannelTitle.PreviewBlend", ch)] = true
+			flatParams[fmt.Sprintf("VideoWidget[%d].FontSize", ch)] = phantomFontSize
+			flatParams[fmt.Sprintf("VideoWidget[%d].ChannelTitle.FrontColor", ch)] = phantomFrontColor()
+			flatParams[fmt.Sprintf("VideoWidget[%d].ChannelTitle.BackColor", ch)] = phantomBackColor()
 		}
 		r, ferr := dhipCallCollectT(conn, "configManager.setConfig", flatParams, sess, 21, nil, nil, nil, nil, CallTimeout)
 		if ferr != nil {
@@ -110,7 +115,37 @@ func SetChannelTitleUserDial(dial Dialer, user, password, title string) error {
 	if _, err := configSetTable(conn, sess, 22, "ChannelTitle", table); err != nil {
 		return err
 	}
+	// Бленд/цвет/шрифт живут в VideoWidget, а не в таблице имён — дотягиваем
+	// отдельной записью (best-effort: имя уже стоит, это украшение).
+	applyChannelTitleStyle(conn, sess)
 	return nil
+}
+
+// applyChannelTitleStyle дотягивает параметры титров фантома поверх имён:
+// EncodeBlend + PreviewBlend, FontSize 12, розовый на прозрачном.
+// Ошибки глотаем: имя уже записано, это только оформление.
+func applyChannelTitleStyle(conn net.Conn, sess int) {
+	table, err := configGetTable(conn, sess, 23, "VideoWidget")
+	if err != nil {
+		return
+	}
+	for i := range table {
+		entry, ok := table[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		ct, ok := entry["ChannelTitle"].(map[string]any)
+		if !ok {
+			ct = make(map[string]any)
+			entry["ChannelTitle"] = ct
+		}
+		ct["EncodeBlend"] = true
+		ct["PreviewBlend"] = true
+		entry["FontSize"] = phantomFontSize
+		ct["FrontColor"] = phantomFrontColor()
+		ct["BackColor"] = phantomBackColor()
+	}
+	_, _ = configSetTable(conn, sess, 24, "VideoWidget", table)
 }
 
 func SetCustomTitle(addr, password, title string, timeout time.Duration) (bool, error) {
@@ -138,6 +173,13 @@ func defaultSlotRect(slot int) []int {
 	y2 := y1 + 500
 	return []int{200, y1, 4500, y2}
 }
+
+// Параметры титров как у phantom (SetPhantomOverlayCGI), маски выкинуты.
+// Розовый на прозрачном видно на любом кадре — белый тонет на светлом.
+const phantomFontSize = 12
+
+func phantomFrontColor() []any { return []any{255, 0, 255, 0} }
+func phantomBackColor() []any  { return []any{0, 0, 0, 0} }
 
 func isZeroRect(r any) bool {
 	if r == nil {
@@ -177,6 +219,9 @@ func sendFlatVideoWidget(conn net.Conn, sess int, texts []string, rect []int) (b
 				flatParams[prefix+".Text"] = texts[j]
 				flatParams[prefix+".EncodeBlend"] = true
 				flatParams[prefix+".PreviewBlend"] = true
+				flatParams[prefix+".FrontColor"] = phantomFrontColor()
+				flatParams[prefix+".BackColor"] = phantomBackColor()
+				flatParams[fmt.Sprintf("VideoWidget[%d].FontSize", ch)] = phantomFontSize
 				r := rect
 				if r == nil || len(r) != 4 {
 					r = defaultSlotRect(j)
@@ -237,8 +282,8 @@ func SetCustomTitleRectTextsUserDial(dial Dialer, user, password string, texts [
 					"EncodeBlend":  false,
 					"PreviewBlend": false,
 					"Rect":         []any{defR[0], defR[1], defR[2], defR[3]},
-					"FrontColor":   []any{255, 255, 255, 255},
-					"BackColor":    []any{0, 0, 0, 128},
+					"FrontColor":   phantomFrontColor(),
+					"BackColor":    phantomBackColor(),
 				}
 			}
 			entry["CustomTitle"] = ct
@@ -252,6 +297,9 @@ func SetCustomTitleRectTextsUserDial(dial Dialer, user, password string, texts [
 				c["Text"] = texts[j]
 				c["EncodeBlend"] = true
 				c["PreviewBlend"] = true
+				c["FrontColor"] = phantomFrontColor()
+				c["BackColor"] = phantomBackColor()
+				entry["FontSize"] = phantomFontSize
 				if rect != nil && len(rect) == 4 {
 					c["Rect"] = []any{rect[0], rect[1], rect[2], rect[3]}
 				} else if isZeroRect(c["Rect"]) {
