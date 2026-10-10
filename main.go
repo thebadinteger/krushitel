@@ -2,9 +2,12 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"runtime/debug"
 	"time"
+
+	_ "net/http/pprof"
 
 	"krushitel/core/scanner"
 	"krushitel/core/ui"
@@ -12,6 +15,13 @@ import (
 )
 
 func main() {
+	// Профайлер для охоты за жиром (RSS/CPU): выключен по дефолту.
+	// KRUSH_PPROF=127.0.0.1:6060 ./krushitel — дальше go tool pprof.
+	if addr := os.Getenv("KRUSH_PPROF"); addr != "" {
+		go func() {
+			_ = http.ListenAndServe(addr, nil)
+		}()
+	}
 	lf, lerr := os.OpenFile("crash.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if lerr == nil {
 		defer lf.Close()

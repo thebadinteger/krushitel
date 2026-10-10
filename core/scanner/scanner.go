@@ -81,7 +81,9 @@ const (
 
 	MAX_RPS        = 3000
 	BURST_LIMIT    = 64
-	countedFlushAt = 500_000
+	// retriedFlushAt — кап сета ретраенных серийников на воркер.
+	// Сет держит только ушедших в могильник (их мало), а не все проверенные.
+	retriedFlushAt = 500_000
 
 	TEARDOWN_ALIVE = true
 )
@@ -482,7 +484,7 @@ type channelPipeline struct {
 	emaSet                    bool
 	inflight                  map[int64]*inflightChannel
 	graveyard                 map[int64]*graveEntry
-	counted                   map[string]struct{}
+	retried                   map[uint64]struct{}
 	buf                       []byte
 	limiter                   *rateLimiter
 	ctx                       context.Context
@@ -585,7 +587,7 @@ func newChannelPipeline(conn *net.UDPConn, timeout time.Duration) *channelPipeli
 		window:    PIPELINE_WINDOW,
 		inflight:  make(map[int64]*inflightChannel, PIPELINE_WINDOW),
 		graveyard: make(map[int64]*graveEntry, PIPELINE_WINDOW),
-		counted:   make(map[string]struct{}),
+		retried:   make(map[uint64]struct{}),
 		buf:       make([]byte, 65536),
 	}
 	nonce := time.Now().UnixNano()
@@ -677,18 +679,48 @@ func (p *channelPipeline) reconnect() {
 	old.Close()
 }
 
-func (p *channelPipeline) markChecked(serial string, stats *ScanStats) {
-	if _, ok := p.counted[serial]; !ok {
-		p.counted[serial] = struct{}{}
-		atomic.AddInt64(&stats.Checked, 1)
+// serialHash — FNV-1a для дедупа ретраев без хранения строк.
+func serialHash(s string) uint64 {
+	h := uint64(14695981039346656037)
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= 1099511628211
 	}
-	if len(p.counted) >= countedFlushAt {
-		p.counted = make(map[string]struct{})
+	return h
+}
+
+// Учёт Checked двухуровневый (диета против 878МБ RSS):
+//   - первая попытка считается сразу, без карты;
+//   - в сет retried попадают только ушедшие в могильник (таймаут/401);
+//   - повторный вердикт по ним не считается.
+// Раньше карта хранила ВСЕ серийники (до 500к строк на воркер — десятки МБ
+// на 30 воркеров и гигабайт на 200). Теперь там только ретраи (единицы МБ).
+// Нюанс file-режима: дубли через край дедуп-окна посчитаются дважды — там
+// приблизительность уже задекларирована (DedupResets).
+func (p *channelPipeline) markFirst(serial string, stats *ScanStats) {
+	atomic.AddInt64(&stats.Checked, 1)
+}
+
+func (p *channelPipeline) rememberRetried(serial string) {
+	p.retried[serialHash(serial)] = struct{}{}
+	if len(p.retried) >= retriedFlushAt {
+		p.retried = make(map[uint64]struct{})
+	}
+}
+
+func (p *channelPipeline) markRetried(serial string, stats *ScanStats) {
+	h := serialHash(serial)
+	if _, ok := p.retried[h]; !ok {
+		p.retried[h] = struct{}{}
+		atomic.AddInt64(&stats.Checked, 1)
+		if len(p.retried) >= retriedFlushAt {
+			p.retried = make(map[uint64]struct{})
+		}
 	}
 }
 
 func (p *channelPipeline) sendFail(serial string, stats *ScanStats) {
-	p.markChecked(serial, stats)
+	p.markFirst(serial, stats)
 	atomic.AddInt64(&stats.Dead, 1)
 }
 
@@ -799,7 +831,11 @@ func (p *channelPipeline) expire(stats *ScanStats) {
 			delete(p.inflight, c)
 			p.expiredCycle++
 			govRecordTO()
-			p.markChecked(ir.serial, stats)
+			if ir.retries == 0 {
+				p.markFirst(ir.serial, stats)
+			} else {
+				p.markRetried(ir.serial, stats)
+			}
 			if storm {
 				// Шторм: тишина — почти наверняка наш дроп от перегруза.
 				// Ретраи только добавят нагрузки — сразу в dead.
@@ -807,6 +843,7 @@ func (p *channelPipeline) expire(stats *ScanStats) {
 				protolog("× %s dead (silence in storm, no retry)", ir.serial)
 				continue
 			}
+			p.rememberRetried(ir.serial)
 			p.gravePut(c, &graveEntry{serial: ir.serial, aid: ir.aid, retries: ir.retries, deadline: now.Add(p.graceTTL)}, stats)
 		}
 	}
@@ -845,7 +882,8 @@ func (p *channelPipeline) sendRetry(g *graveEntry, stats *ScanStats) {
 			p.reconnect()
 		}
 		govRecordErr()
-		p.sendFail(g.serial, stats)
+		// Серийник уже посчитан при кладке в могильник — только Dead.
+		atomic.AddInt64(&stats.Dead, 1)
 		return
 	}
 	protolog("~ %s retry %d/%d cseq=%d", g.serial, g.retries+1, CHANNEL_RETRIES, cseq)
@@ -866,7 +904,11 @@ func (p *channelPipeline) resolve(r dhResp, aliveCh chan<- string, stats *ScanSt
 	if ir, ok := p.inflight[r.CSeq]; ok {
 		delete(p.inflight, r.CSeq)
 		p.resolvedCycle++
-		p.markChecked(ir.serial, stats)
+		if ir.retries == 0 {
+			p.markFirst(ir.serial, stats)
+		} else {
+			p.markRetried(ir.serial, stats)
+		}
 		if !ir.sentAt.IsZero() {
 			govRecordOK(time.Since(ir.sentAt))
 		}
@@ -884,7 +926,9 @@ func (p *channelPipeline) resolve(r dhResp, aliveCh chan<- string, stats *ScanSt
 			delete(p.inflight, r.CSeq)
 			p.expiredCycle++
 			govRecordTO()
-			p.markChecked(ir.serial, stats)
+			// Учёт уже сделан выше (первая попытка / ретрай); здесь только
+			// запоминаем для будущих повторных вердиктов.
+			p.rememberRetried(ir.serial)
 			p.gravePut(r.CSeq, &graveEntry{serial: ir.serial, aid: ir.aid, retries: ir.retries, deadline: time.Now().Add(p.graceTTL), explicit: true}, stats)
 			protolog("< %d cseq=%d %s (401 cloud-timeout, queued retry)", r.Code, r.CSeq, ir.serial)
 			scanlogSampled("[SCAN] %s 401 (cloud timeout) → retry", ir.serial)

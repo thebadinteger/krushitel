@@ -476,7 +476,15 @@ func (c *Client) GetSnapshot(channel int, timeout time.Duration) ([]byte, error)
 	if soi < 0 {
 		return nil, fmt.Errorf("snapshot: no SOI found (%d bytes)", len(data))
 	}
-	eoi := lastIndexMarker(data, 0xff, 0xd9)
+	// Первый EOI строго после SOI: хвост прошлого кадра в начале буфера даёт
+	// EOI раньше SOI, и срез [soi:eoi+2] рвал процесс (panic slice bounds).
+	eoi := -1
+	for i := soi + 2; i+1 < len(data); i++ {
+		if data[i] == 0xff && data[i+1] == 0xd9 {
+			eoi = i
+			break
+		}
+	}
 	if eoi < 0 {
 		return nil, fmt.Errorf("snapshot: no EOI found (%d bytes)", len(data))
 	}
