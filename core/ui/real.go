@@ -76,7 +76,7 @@ func newRunState(mode int, panel string) *runState {
 		mode:     mode,
 		panel:    panel,
 		start:    time.Now(),
-		eventsCh: make(chan string, 256),
+		eventsCh: make(chan string, 4096),
 	}
 	activeRunState.Store(r)
 	return r

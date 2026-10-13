@@ -681,6 +681,7 @@ const (
 	rowEditCT1
 	rowEditCT2
 	rowEditCT3
+	rowEditCT4
 	rowDummy
 	rowDebug
 	rowGovernor
@@ -720,6 +721,7 @@ func (m model) settingsRows() []settingsRow {
 			settingsRow{fmt.Sprintf(tr("   └ OSD слот %d: %s"), 2, quoteVal(cfg.CustomTexts[1])), rowEditCT1},
 			settingsRow{fmt.Sprintf(tr("   └ OSD слот %d: %s"), 3, quoteVal(cfg.CustomTexts[2])), rowEditCT2},
 			settingsRow{fmt.Sprintf(tr("   └ OSD слот %d: %s"), 4, quoteVal(cfg.CustomTexts[3])), rowEditCT3},
+			settingsRow{fmt.Sprintf(tr("   └ OSD слот %d: %s"), 5, quoteVal(cfg.CustomTexts[4])), rowEditCT4},
 		)
 	}
 	langLabel := "язык: русский"
@@ -781,6 +783,9 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, textinput.Blink
 		case rowEditCT3:
 			m.openTitleEdit(4)
+			return m, textinput.Blink
+		case rowEditCT4:
+			m.openTitleEdit(5)
 			return m, textinput.Blink
 		case rowDummy:
 			m.openDummyEdit()

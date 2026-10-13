@@ -595,7 +595,11 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 		ScanTotal:   scanTotal,
 	}
 
-	events := make(chan string, 1024)
+	eventBuf := 4096
+	if threads*64 > eventBuf {
+		eventBuf = threads * 64
+	}
+	events := make(chan string, eventBuf)
 	doneEvents := make(chan struct{})
 	go func() {
 		for line := range events {
@@ -717,7 +721,11 @@ func runHeadlessTitles(cfg ui.Settings, inFile string, threads int,
 	defer stop()
 
 	stats := &exploit.TitlesStats{}
-	events := make(chan string, 1024)
+	eventBuf := 4096
+	if threads*64 > eventBuf {
+		eventBuf = threads * 64
+	}
+	events := make(chan string, eventBuf)
 	doneEvents := make(chan struct{})
 	go func() {
 		for line := range events {

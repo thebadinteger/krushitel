@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -93,9 +94,9 @@ func SetChannelTitleUserDial(dial Dialer, user, password, title string) error {
 			flatParams[fmt.Sprintf("ChannelTitle[%d].Name", ch)] = name
 			flatParams[fmt.Sprintf("VideoWidget[%d].ChannelTitle.EncodeBlend", ch)] = true
 			flatParams[fmt.Sprintf("VideoWidget[%d].ChannelTitle.PreviewBlend", ch)] = true
-			flatParams[fmt.Sprintf("VideoWidget[%d].FontSize", ch)] = phantomFontSize
-			flatParams[fmt.Sprintf("VideoWidget[%d].ChannelTitle.FrontColor", ch)] = phantomFrontColor()
-			flatParams[fmt.Sprintf("VideoWidget[%d].ChannelTitle.BackColor", ch)] = phantomBackColor()
+			flatParams[fmt.Sprintf("VideoWidget[%d].FontSize", ch)] = titleFontSize
+			flatParams[fmt.Sprintf("VideoWidget[%d].ChannelTitle.FrontColor", ch)] = titleFrontColor()
+			flatParams[fmt.Sprintf("VideoWidget[%d].ChannelTitle.BackColor", ch)] = titleBackColor()
 		}
 		r, ferr := dhipCallCollectT(conn, "configManager.setConfig", flatParams, sess, 21, nil, nil, nil, nil, CallTimeout)
 		if ferr != nil {
@@ -141,9 +142,9 @@ func applyChannelTitleStyle(conn net.Conn, sess int) {
 		}
 		ct["EncodeBlend"] = true
 		ct["PreviewBlend"] = true
-		entry["FontSize"] = phantomFontSize
-		ct["FrontColor"] = phantomFrontColor()
-		ct["BackColor"] = phantomBackColor()
+		entry["FontSize"] = titleFontSize
+		ct["FrontColor"] = titleFrontColor()
+		ct["BackColor"] = titleBackColor()
 	}
 	_, _ = configSetTable(conn, sess, 24, "VideoWidget", table)
 }
@@ -174,12 +175,12 @@ func defaultSlotRect(slot int) []int {
 	return []int{200, y1, 4500, y2}
 }
 
-// Параметры титров как у phantom (SetPhantomOverlayCGI), маски выкинуты.
-// Розовый на прозрачном видно на любом кадре — белый тонет на светлом.
-const phantomFontSize = 12
+// Шрифт титров как у phantom (SetPhantomOverlayCGI). Цвета — классика:
+// белый текст, полупрозрачный чёрный фон.
+const titleFontSize = 12
 
-func phantomFrontColor() []any { return []any{255, 0, 255, 0} }
-func phantomBackColor() []any  { return []any{0, 0, 0, 0} }
+func titleFrontColor() []any { return []any{255, 255, 255, 255} }
+func titleBackColor() []any  { return []any{0, 0, 0, 128} }
 
 func isZeroRect(r any) bool {
 	if r == nil {
@@ -210,18 +211,28 @@ func isZeroRect(r any) bool {
 	return true
 }
 
+// sendFlatCapped — flat с фолбэком: если прошивка знает только 4 слота и
+// завернула весь setConfig из-за пятого, повторяем первыми 4.
+func sendFlatCapped(conn net.Conn, sess int, texts []string, rect []int) (bool, error) {
+	applied, err := sendFlatVideoWidget(conn, sess, texts, rect)
+	if err != nil && len(texts) > 4 && strings.Contains(err.Error(), "result=false") {
+		return sendFlatVideoWidget(conn, sess, texts[:4], rect)
+	}
+	return applied, err
+}
+
 func sendFlatVideoWidget(conn net.Conn, sess int, texts []string, rect []int) (bool, error) {
 	flatParams := make(map[string]any)
 	for ch := 0; ch < 32; ch++ {
-		for j := 0; j < 4; j++ {
+		for j := 0; j < len(texts); j++ {
 			prefix := fmt.Sprintf("VideoWidget[%d].CustomTitle[%d]", ch, j)
 			if j < len(texts) {
 				flatParams[prefix+".Text"] = texts[j]
 				flatParams[prefix+".EncodeBlend"] = true
 				flatParams[prefix+".PreviewBlend"] = true
-				flatParams[prefix+".FrontColor"] = phantomFrontColor()
-				flatParams[prefix+".BackColor"] = phantomBackColor()
-				flatParams[fmt.Sprintf("VideoWidget[%d].FontSize", ch)] = phantomFontSize
+				flatParams[prefix+".FrontColor"] = titleFrontColor()
+				flatParams[prefix+".BackColor"] = titleBackColor()
+				flatParams[fmt.Sprintf("VideoWidget[%d].FontSize", ch)] = titleFontSize
 				r := rect
 				if r == nil || len(r) != 4 {
 					r = defaultSlotRect(j)
@@ -263,7 +274,7 @@ func SetCustomTitleRectTextsUserDial(dial Dialer, user, password string, texts [
 
 	table, err := configGetTable(conn, sess, 30, "VideoWidget")
 	if err != nil {
-		return sendFlatVideoWidget(conn, sess, texts, rect)
+		return sendFlatCapped(conn, sess, texts, rect)
 	}
 
 	changed := false
@@ -274,7 +285,11 @@ func SetCustomTitleRectTextsUserDial(dial Dialer, user, password string, texts [
 		}
 		ct, ok := entry["CustomTitle"].([]any)
 		if !ok || len(ct) == 0 {
-			ct = make([]any, 4)
+			nslots := len(texts)
+			if nslots < 4 {
+				nslots = 4
+			}
+			ct = make([]any, nslots)
 			for j := range ct {
 				defR := defaultSlotRect(j)
 				ct[j] = map[string]any{
@@ -282,8 +297,8 @@ func SetCustomTitleRectTextsUserDial(dial Dialer, user, password string, texts [
 					"EncodeBlend":  false,
 					"PreviewBlend": false,
 					"Rect":         []any{defR[0], defR[1], defR[2], defR[3]},
-					"FrontColor":   phantomFrontColor(),
-					"BackColor":    phantomBackColor(),
+					"FrontColor":   titleFrontColor(),
+					"BackColor":    titleBackColor(),
 				}
 			}
 			entry["CustomTitle"] = ct
@@ -297,9 +312,9 @@ func SetCustomTitleRectTextsUserDial(dial Dialer, user, password string, texts [
 				c["Text"] = texts[j]
 				c["EncodeBlend"] = true
 				c["PreviewBlend"] = true
-				c["FrontColor"] = phantomFrontColor()
-				c["BackColor"] = phantomBackColor()
-				entry["FontSize"] = phantomFontSize
+				c["FrontColor"] = titleFrontColor()
+				c["BackColor"] = titleBackColor()
+				entry["FontSize"] = titleFontSize
 				if rect != nil && len(rect) == 4 {
 					c["Rect"] = []any{rect[0], rect[1], rect[2], rect[3]}
 				} else if isZeroRect(c["Rect"]) {
@@ -314,11 +329,11 @@ func SetCustomTitleRectTextsUserDial(dial Dialer, user, password string, texts [
 		}
 	}
 	if !changed {
-		return sendFlatVideoWidget(conn, sess, texts, rect)
+		return sendFlatCapped(conn, sess, texts, rect)
 	}
 	applied, err := configSetTable(conn, sess, 31, "VideoWidget", table)
 	if err != nil {
-		if fapplied, ferr := sendFlatVideoWidget(conn, sess, texts, rect); ferr == nil {
+		if fapplied, ferr := sendFlatCapped(conn, sess, texts, rect); ferr == nil {
 			return fapplied, nil
 		}
 		return applied, err

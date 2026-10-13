@@ -32,7 +32,7 @@ type Settings struct {
 	Debug bool `json:"debug" toml:"debug"`
 
 	ChannelText string    `json:"channel_text" toml:"channel_text"`
-	CustomTexts [4]string `json:"custom_texts" toml:"custom_texts"`
+	CustomTexts [5]string `json:"custom_texts" toml:"custom_texts"`
 
 	Text string `json:"text,omitempty" toml:"text,omitempty"`
 
@@ -71,7 +71,7 @@ func defaultSettings() Settings {
 		Lang:        "ru",
 		IsActivated: false,
 		ChannelText: "",
-		CustomTexts: [4]string{},
+		CustomTexts: [5]string{},
 		DummyLogin:  defaultDummyLogin,
 		DummyPass:   defaultDummyPass,
 		Governor:    true,
@@ -163,8 +163,8 @@ func applyTomlMap(m map[string]any, s *Settings) {
 	getInt("governor_cap", &s.GovernorCap)
 
 	if arr, ok := m["custom_texts"].([]any); ok {
-		var out [4]string
-		for i := 0; i < len(arr) && i < 4; i++ {
+		var out [5]string
+		for i := 0; i < len(arr) && i < 5; i++ {
 			if str, ok := arr[i].(string); ok {
 				out[i] = str
 			}
