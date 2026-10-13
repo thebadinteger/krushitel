@@ -242,10 +242,6 @@ func (m model) updateGreet(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.selectGreet(m.greetCur)
 	case tea.KeyRunes:
 		r := msg.Runes[0]
-		if r == 'q' || r == 'Q' {
-			m.quitting = true
-			return m, tea.Quit
-		}
 		if r >= '1' && r <= '2' {
 			return m.selectGreet(int(r - '0' - 1))
 		}
@@ -324,10 +320,6 @@ func (m model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyRunes:
 		r := msg.Runes[0]
-		if r == 'q' || r == 'Q' {
-			m.quitting = true
-			return m, tea.Quit
-		}
 		if r >= '1' && r <= '5' {
 			for i, item := range items {
 				if item.num == string(r) {
@@ -386,11 +378,6 @@ func (m model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-	case tea.KeyRunes:
-		if m.form.curIsBool() && strings.ToLower(string(msg.Runes)) == "q" {
-			m.quitting = true
-			return m, tea.Quit
-		}
 	}
 	m.form.update(&m, msg)
 	return m, nil
@@ -401,10 +388,6 @@ func (m model) updateFilePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.picker = nil
 		m.state = stForm
 		return m, nil
-	}
-	if msg.Type == tea.KeyRunes && strings.EqualFold(string(msg.Runes), "q") {
-		m.quitting = true
-		return m, tea.Quit
 	}
 	if m.picker.update(msg) {
 		if m.picker.selected != "" && m.picker.field < len(m.form.fields) {
@@ -435,11 +418,6 @@ func (m model) updateRun(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch strings.ToLower(msg.String()) {
-	case "q":
-		m.run.closeLog()
-		discordStop()
-		m.quitting = true
-		return m, tea.Quit
 	case "b":
 		if m.run.cancel != nil {
 			m.run.cancel()
@@ -489,10 +467,6 @@ func (m model) updateXMLMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = stMenu
 	case tea.KeyRunes:
 		r := msg.Runes[0]
-		if r == 'q' || r == 'Q' {
-			m.quitting = true
-			return m, tea.Quit
-		}
 		if r >= '1' && r <= '4' {
 			m.xmlCur = int(r - '0' - 1)
 			return m.updateXMLMenu(tea.KeyMsg{Type: tea.KeyEnter})
@@ -509,9 +483,6 @@ func (m model) updateMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch strings.ToLower(string(msg.Runes)) {
 		case "b":
 			m.state = stMenu
-		case "q":
-			m.quitting = true
-			return m, tea.Quit
 		}
 	}
 	return m, nil
@@ -554,9 +525,6 @@ func (m model) updateUpdatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "n", "т":
 			m.updEnter()
 			return m, nil
-		case "q", "й":
-			m.quitting = true
-			return m, tea.Quit
 		}
 	}
 	return m, nil
@@ -581,11 +549,6 @@ func (m model) updateUpdating(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if finished && err != nil {
 			m.updEnter()
 			return m, nil
-		}
-	case tea.KeyRunes:
-		if r := strings.ToLower(string(msg.Runes)); r == "q" || r == "й" {
-			m.quitting = true
-			return m, tea.Quit
 		}
 	}
 	return m, nil
@@ -749,11 +712,6 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.setCur = (m.setCur + 1) % len(rows)
 	case tea.KeyEsc:
 		m.state = stMenu
-	case tea.KeyRunes:
-		if strings.ToLower(string(msg.Runes)) == "q" {
-			m.quitting = true
-			return m, tea.Quit
-		}
 	case tea.KeyEnter, tea.KeySpace:
 		if m.setCur >= len(rows) {
 			m.setCur = 0
@@ -830,9 +788,9 @@ func (m model) View() string {
 	var content, help string
 	switch m.state {
 	case stGreet:
-		content, help = m.greetView(), tr("↑↓ навигация  ·  enter / 0-9 - выбор  ·  q - выход")
+		content, help = m.greetView(), tr("↑↓ навигация  ·  enter / 0-9 - выбор")
 	case stMenu:
-		help = tr("↑↓ навигация  ·  enter / 0-9 - выбор  ·  q - выход")
+		help = tr("↑↓ навигация  ·  enter / 0-9 - выбор")
 		content = m.menuView()
 	case stForm:
 		content, help = m.form.view(), m.form.helpLine()
@@ -844,16 +802,16 @@ func (m model) View() string {
 		}
 	case stRun:
 		content = m.run.view()
-		help = tr("esc/b — стоп и в меню  ·  q — выход")
+		help = tr("esc/b — стоп и в меню")
 		if m.run.finished() {
-			help = tr("esc/b — в меню  ·  q — выход")
+			help = tr("esc/b — в меню")
 		}
 	case stXMLMenu:
-		content, help = m.xmlMenuView(), tr("↑↓ навигация  ·  enter / 0-9 - выбор  ·  esc - назад  ·  q - выход")
+		content, help = m.xmlMenuView(), tr("↑↓ навигация  ·  enter / 0-9 - выбор  ·  esc - назад")
 	case stMsg:
 		content = m.msgView()
 	case stSettings:
-		content, help = m.settingsView(), tr("↑↓ навигация  ·  enter/пробел - переключить  ·  esc — назад  ·  q - выход")
+		content, help = m.settingsView(), tr("↑↓ навигация  ·  enter/пробел - переключить  ·  esc — назад")
 	case stTitleEdit:
 		content, help = m.titleEditView(), tr("enter - сохранить  ·  esc - назад  ·  ctrl+c - выход")
 	case stDummyEdit:
@@ -861,7 +819,7 @@ func (m model) View() string {
 	case stUpdate:
 		content, help = m.updatePromptView(), ""
 	case stUpdating:
-		content, help = m.updateProgressView(), tr("esc — отмена · q — выход")
+		content, help = m.updateProgressView(), tr("esc — отмена")
 	}
 	return withBottom(content, help, m.h)
 }

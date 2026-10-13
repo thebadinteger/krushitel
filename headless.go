@@ -283,15 +283,16 @@ func runHeadlessBot(cfg ui.Settings, threads int) int {
 		Threads: threads,
 		OutRoot: ".",
 		Opts: exploit.Opts{
-			Snaps:       cfg.Snaps,
-			XML:         cfg.XML,
-			Titles:      cfg.Titles,
-			ChanText:    cfg.ChannelText,
-			CustomTexts: cfg.CustomTexts[:],
-			DummyLogin:  cfg.DummyLogin,
-			DummyPass:   cfg.DummyPass,
-			WipeUsers:   cfg.WipeUsers,
-			},
+			Snaps:           cfg.Snaps,
+			XML:             cfg.XML,
+			Titles:          cfg.Titles,
+			ChanText:        cfg.ChannelText,
+			CustomTexts:     cfg.CustomTexts[:],
+			DummyLogin:      cfg.DummyLogin,
+			DummyPass:       cfg.DummyPass,
+			SkipProblematic: cfg.SkipShitty,
+			WipeUsers:       cfg.WipeUsers,
+		},
 		Log: func(format string, args ...any) { flog("%s", fmt.Sprintf(format, args...)) },
 	})
 	if err != nil {
@@ -649,16 +650,17 @@ func runHeadlessExploit(cfg ui.Settings, inFile, outDir string, threads int, fre
 	}()
 
 	exploit.RunPrefixExploit(ctx, prefixes, direct, outDir, threads, exploit.Opts{
-		OutDir:      outDir,
-		Snaps:       cfg.Snaps,
-		XML:         cfg.XML,
-		Titles:      cfg.Titles,
-		ChanText:    cfg.ChannelText,
-		CustomTexts: cfg.CustomTexts[:],
-		DummyLogin:  cfg.DummyLogin,
-		DummyPass:   cfg.DummyPass,
-		Resume:      resume,
-		WipeUsers:   cfg.WipeUsers,
+		OutDir:          outDir,
+		Snaps:           cfg.Snaps,
+		XML:             cfg.XML,
+		Titles:          cfg.Titles,
+		ChanText:        cfg.ChannelText,
+		CustomTexts:     cfg.CustomTexts[:],
+		DummyLogin:      cfg.DummyLogin,
+		DummyPass:       cfg.DummyPass,
+		Resume:          resume,
+		SkipProblematic: cfg.SkipShitty,
+		WipeUsers:       cfg.WipeUsers,
 	}, tp, events)
 
 	close(doneEvents)

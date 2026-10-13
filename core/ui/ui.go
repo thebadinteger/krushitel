@@ -32,6 +32,7 @@ var (
 	styleGreen  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	styleRed    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	styleYellow = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	styleBlue   = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
 	styleBold   = lipgloss.NewStyle().Bold(true)
 )
 
@@ -40,6 +41,7 @@ func cyan(s string) string   { return styleCyan.Render(s) }
 func green(s string) string  { return styleGreen.Render(s) }
 func red(s string) string    { return styleRed.Render(s) }
 func yellow(s string) string { return styleYellow.Render(s) }
+func blue(s string) string   { return styleBlue.Render(s) }
 func bold(s string) string   { return styleBold.Render(s) }
 
 const margin = "    "

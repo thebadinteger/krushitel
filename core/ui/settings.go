@@ -68,6 +68,7 @@ func defaultSettings() Settings {
 		Snaps:       true,
 		XML:         false,
 		Titles:      false,
+		SkipShitty:  true,
 		Lang:        "ru",
 		IsActivated: false,
 		ChannelText: "",

@@ -179,7 +179,7 @@ func defaultSlotRect(slot int) []int {
 // белый текст, полупрозрачный чёрный фон.
 const titleFontSize = 12
 
-func titleFrontColor() []any { return []any{255, 255, 255, 255} }
+func titleFrontColor() []any { return []any{0, 255, 0, 255} }
 func titleBackColor() []any  { return []any{0, 0, 0, 128} }
 
 func isZeroRect(r any) bool {
@@ -209,6 +209,47 @@ func isZeroRect(r any) bool {
 		}
 	}
 	return true
+}
+
+// isHiddenRect — слот не виден: рект нулевой либо вырожденный
+// (нулевая ширина/высота, как [0,2300,0,2300] — камера такие отдаёт
+// за неиспользуемые слоты). isZeroRect ловит только [0,0,0,0],
+// а такие проскакивают и навсегда остаются невидимыми.
+func isHiddenRect(r any) bool {
+	if isZeroRect(r) {
+		return true
+	}
+	nums := rectNums(r)
+	if len(nums) != 4 {
+		return true
+	}
+	return nums[2]-nums[0] <= 0 || nums[3]-nums[1] <= 0
+}
+
+func rectNums(r any) []float64 {
+	out := make([]float64, 0, 4)
+	switch v := r.(type) {
+	case []any:
+		for _, val := range v {
+			switch n := val.(type) {
+			case float64:
+				out = append(out, n)
+			case int:
+				out = append(out, float64(n))
+			case int64:
+				out = append(out, float64(n))
+			default:
+				return nil
+			}
+		}
+	case []int:
+		for _, n := range v {
+			out = append(out, float64(n))
+		}
+	default:
+		return nil
+	}
+	return out
 }
 
 // sendFlatCapped — flat с фолбэком: если прошивка знает только 4 слота и
@@ -317,7 +358,7 @@ func SetCustomTitleRectTextsUserDial(dial Dialer, user, password string, texts [
 				entry["FontSize"] = titleFontSize
 				if rect != nil && len(rect) == 4 {
 					c["Rect"] = []any{rect[0], rect[1], rect[2], rect[3]}
-				} else if isZeroRect(c["Rect"]) {
+				} else if isHiddenRect(c["Rect"]) {
 					defR := defaultSlotRect(j)
 					c["Rect"] = []any{defR[0], defR[1], defR[2], defR[3]}
 				}

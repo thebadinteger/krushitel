@@ -38,6 +38,7 @@ type pickState struct {
 	vis      int
 	err      string
 	selected string
+	find     string
 }
 
 var lastPickDir string
@@ -72,6 +73,7 @@ func newPicker(mode pickMode, field int, startVal string) *pickState {
 
 func (p *pickState) load() {
 	p.err = ""
+	p.find = ""
 	ents, err := os.ReadDir(p.cwd)
 	if err != nil {
 		p.err = err.Error()
@@ -143,25 +145,121 @@ func (p *pickState) activate() bool {
 }
 
 func (p *pickState) update(msg tea.KeyMsg) (done bool) {
-	n := p.rowCount()
 	switch msg.Type {
 	case tea.KeyUp, tea.KeyShiftTab:
-		if n > 0 {
-			p.cur = (p.cur - 1 + n) % n
-		}
+		p.step(-1)
 	case tea.KeyDown, tea.KeyTab:
-		if n > 0 {
-			p.cur = (p.cur + 1) % n
-		}
+		p.step(1)
 	case tea.KeyLeft:
 		p.goUp()
+	case tea.KeyBackspace:
+		if p.find != "" {
+			r := []rune(p.find)
+			p.find = string(r[:len(r)-1])
+			p.snapToMatch()
+		}
+	case tea.KeyRunes:
+		if len(msg.Runes) > 0 {
+			p.find += string(msg.Runes)
+			if r := []rune(p.find); len(r) > 64 {
+				p.find = string(r[:64])
+			}
+			p.snapToMatch()
+		}
 	case tea.KeyEsc:
+		if p.find != "" {
+			p.find = ""
+			p.cur, p.top = 0, 0
+			return false
+		}
 		return true
 	case tea.KeyEnter:
+		if p.find != "" {
+			ok := false
+			for _, i := range p.matches() {
+				if i == p.cur {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return false
+			}
+		}
 		done = p.activate()
 	}
 	p.fixScroll()
 	return done
+}
+
+// matches — индексы строк под текущий find. Без find — все строки.
+// Служебный here-ряд ("[ выбрать эту папку ]") в выдачу не попадает.
+func (p *pickState) matches() []int {
+	out := make([]int, 0, len(p.rows))
+	if p.find == "" {
+		for i := range p.rows {
+			out = append(out, i)
+		}
+		return out
+	}
+	q := strings.ToLower(p.find)
+	for i, r := range p.rows {
+		if r.here {
+			continue
+		}
+		if strings.Contains(strings.ToLower(r.name), q) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// snapToMatch — после правки find встать на первое совпадение.
+// Если текущий курсор и так в выдаче — не дёргаем.
+func (p *pickState) snapToMatch() {
+	m := p.matches()
+	if len(m) == 0 {
+		return
+	}
+	for _, i := range m {
+		if i == p.cur {
+			return
+		}
+	}
+	p.cur = m[0]
+	p.top = 0
+}
+
+// step — шаг навигации внутри выдачи. В края упираемся, без телепортов:
+// вверх на первой строке и вниз на последней — стоим на месте.
+func (p *pickState) step(dir int) {
+	m := p.matches()
+	if len(m) == 0 {
+		return
+	}
+	pos := -1
+	for i, ri := range m {
+		if ri == p.cur {
+			pos = i
+			break
+		}
+	}
+	if pos < 0 {
+		if dir > 0 {
+			p.cur = m[0]
+		} else {
+			p.cur = m[len(m)-1]
+		}
+		return
+	}
+	pos += dir
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(m)-1 {
+		pos = len(m) - 1
+	}
+	p.cur = m[pos]
 }
 
 func (p *pickState) fixScroll() {
@@ -255,15 +353,18 @@ func (p *pickState) view(w, h int) string {
 
 	var lines []string
 	lines = append(lines, top, wrap(cyan(cutStr(p.cwd, inner-2)), false))
+	if p.find != "" {
+		lines = append(lines, wrap(blue("find: ")+cutStr(p.find, inner-8), false))
+	}
 
 	if p.err != "" {
 		lines = append(lines, wrap(red("↑ "+p.err), false))
 	}
-	if len(p.rows) <= 1 && p.mode == pickFile && p.err == "" {
+	if len(p.rows) <= 1 && p.mode == pickFile && p.err == "" && p.find == "" {
 		lines = append(lines, wrap(dim(tr("(папка пуста)")), false))
 	}
 
-	for i := p.top; i < len(p.rows) && i < p.top+vis; i++ {
+	renderRow := func(i int) string {
 		r := p.rows[i]
 		sel := i == p.cur
 		var content string
@@ -287,7 +388,35 @@ func (p *pickState) view(w, h int) string {
 		if sel {
 			prefix = "▶ "
 		}
-		lines = append(lines, wrap(prefix+content, sel))
+		return wrap(prefix+content, sel)
+	}
+
+	order := p.matches()
+	if p.find == "" {
+		for i := p.top; i < len(p.rows) && i < p.top+vis; i++ {
+			lines = append(lines, renderRow(i))
+		}
+	} else {
+		if len(order) == 0 {
+			lines = append(lines, wrap(dim(tr("(ничего не найдено)")), false))
+		}
+		pos := 0
+		for i, ri := range order {
+			if ri == p.cur {
+				pos = i
+				break
+			}
+		}
+		start := pos
+		if start > len(order)-vis {
+			start = len(order) - vis
+		}
+		if start < 0 {
+			start = 0
+		}
+		for _, ri := range order[start:min(start+vis, len(order))] {
+			lines = append(lines, renderRow(ri))
+		}
 	}
 
 	for len(lines) < 5 {
@@ -299,5 +428,5 @@ func (p *pickState) view(w, h int) string {
 }
 
 func pickHelpLine() string {
-	return tr("↑↓ навигация · enter - открыть/выбрать · ← - наверх · esc - назад · q - выход")
+	return tr("↑↓ навигация · буквы - поиск · enter - открыть/выбрать · ← - наверх · backspace - стереть · esc - сброс/назад")
 }

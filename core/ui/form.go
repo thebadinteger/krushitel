@@ -111,7 +111,7 @@ func (f *formState) curIsBool() bool {
 
 func (f *formState) helpLine() string {
 	if f.curIsBool() {
-		return tr("y/n - да/нет · enter - далее · q - выход · esc - в меню")
+		return tr("y/n - да/нет · enter - далее · esc - в меню")
 	}
 	if f.cur < len(f.fields) && f.fields[f.cur].kind == fStr && !f.fields[f.cur].pass && f.fields[f.cur].pick != pickNone {
 		return tr("enter - далее · ctrl+f - файловый менеджер · esc - в меню · ctrl+c - выход")
