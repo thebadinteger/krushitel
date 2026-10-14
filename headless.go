@@ -456,7 +456,7 @@ func headlessSignals() (context.Context, func()) {
 				os.Exit(130)
 			}
 			forced = true
-			out("[!] CTRL+C: останавливаюсь, воркеры выкарабкиваются до %s. Повтор — принудительно.", forceExitAfter)
+			out("[!] CTRL+C detected, exiting")
 			cancel()
 			go func() {
 				time.Sleep(forceExitAfter)
