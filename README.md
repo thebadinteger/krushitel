@@ -17,7 +17,7 @@
 </div>
 
 <div align="center">
-<img width="767" height="448" alt="изображение" src="https://github.com/user-attachments/assets/5200d9bb-1479-409c-b405-14b992e7e0de" />
+<img width="633" height="206" alt="изображение" src="https://github.com/user-attachments/assets/03dad357-4337-4188-aa8b-df6b63561707" />
 </div>
 
 > [!WARNING]
@@ -32,22 +32,17 @@
  - Позволяет вытащить креды с камеры
  - и многое другое...
 
-### Сборка на Windows
+### Сборка
   ```sh
 git clone github.com/undervolter/krushitel
 cd krushitel
-build_all.cmd
-  ```
-### Сборка на Linux
-  ```sh
-git clone github.com/undervolter/krushitel
-cd krushitel
-build.sh
+go build .
   ```
 <h2>Скомпилированные бинарники доступны в Releases.</h2>
 
 ### Баги
  - Дохуя
+ - Могут быть
  
 <h2>Нашел какой то баг? Пожалуйста, отпиши в issues!</h2>
 
