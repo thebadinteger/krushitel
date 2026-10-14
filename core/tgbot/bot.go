@@ -15,6 +15,7 @@ import (
 	"krushitel/core/exploit"
 	"krushitel/core/fwd"
 	"krushitel/core/scanner"
+	"krushitel/core/update"
 )
 
 type Options struct {
@@ -35,7 +36,7 @@ const (
 )
 
 var helpText = strings.Join([]string{
-	"krushitel tgbot — базовый контрол:",
+	"krushitel v" + update.CurrentVersion,
 	"/scan <цели> — брут по префиксам/серийникам (пробел или новые строки)",
 	"/scanfile — жду файл следующим сообщением (или прикрепи файл с подписью /scanfile)",
 	"/status — статус текущего скана",
@@ -96,8 +97,17 @@ func Run(opts Options) error {
 			b.logf("tgbot: shutdown")
 			return nil
 		}
-		upd, err := b.api.Poll()
+		upd, err := b.pollCtx(opts.Ctx)
 		if err != nil {
+			if opts.Ctx != nil && opts.Ctx.Err() != nil {
+				b.st.mu.Lock()
+				if b.st.cancel != nil {
+					b.st.cancel()
+				}
+				b.st.mu.Unlock()
+				b.logf("tgbot: shutdown")
+				return nil
+			}
 			b.logf("[!] tgbot poll: %v", err)
 			time.Sleep(3 * time.Second)
 			continue
@@ -116,6 +126,34 @@ func Run(opts Options) error {
 func (b *Bot) logf(format string, args ...any) {
 	if b.logFn != nil {
 		b.logFn(format, args...)
+	}
+}
+
+// pollCtx — тот же Poll, но просыпается сразу при отмене контекста.
+// Зависший long-poll бросаем в фоне: мы всё равно выходим, а его
+// HTTP-запрос дотлеет сам. Без этого одиночный Ctrl+C в простое
+// висел до конца long-poll (35с) и требовался даблтап.
+func (b *Bot) pollCtx(ctx context.Context) (*Update, error) {
+	if ctx == nil {
+		return b.api.Poll()
+	}
+	type res struct {
+		upd *Update
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		upd, err := b.api.Poll()
+		select {
+		case ch <- res{upd, err}:
+		case <-ctx.Done():
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r := <-ch:
+		return r.upd, r.err
 	}
 }
 
