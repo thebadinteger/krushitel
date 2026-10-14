@@ -3,7 +3,8 @@
 <h1>krushitel</h1>
 
 <p>
-  <img src="https://img.shields.io/badge/Go-1.26.5-00ADD8?logo=go&logoColor=white" alt="Go 1.26.5" />
+  <img width="633" height="206" alt="изображение" src="https://github.com/user-attachments/assets/e3d5b099-0029-4920-b958-02d0401a1520" />
+
 </p>
 
 <p>
@@ -14,10 +15,6 @@
 
 <div align="center">
 <h2>Vulnerability scanner for Dahua CCTV by serial number.</h2>
-</div>
-
-<div align="center">
-<img width="767" height="448" alt="изображение" src="https://github.com/user-attachments/assets/a0bb5d73-9684-4c42-90cb-326b2ea62a0c" />
 </div>
 
 > [!WARNING]
