@@ -165,8 +165,8 @@ func runHeadless() bool {
 	}
 	cfg := ui.Config()
 	start = time.Now()
-	if *mode != "exploit" && *mode != "titles" && *mode != "ironscan" && *mode != "tgbot" {
-		out("[!] err: неизвестный режим %q — доступен exploit | titles | ironscan | tgbot", *mode)
+	if *mode != "exploit" && *mode != "titles" && *mode != "clean" && *mode != "ironscan" && *mode != "tgbot" {
+		out("[!] err: неизвестный режим %q — доступен exploit | titles | clean | ironscan | tgbot", *mode)
 		os.Exit(2)
 	}
 	if *mode != "tgbot" {
@@ -236,6 +236,8 @@ func runHeadless() bool {
 		os.Exit(runHeadlessExploit(cfg, *inFile, *outDir, *threads, *fresh, progress, renderDone))
 	case "titles":
 		os.Exit(runHeadlessTitles(cfg, *inFile, *threads, progress, renderDone))
+	case "clean":
+		os.Exit(runHeadlessClean(cfg, *inFile, *threads, progress, renderDone))
 	case "ironscan":
 		os.Exit(runHeadlessIronScan(cfg, *inFile, *outDir, *threads, *port, progress, renderDone))
 	case "tgbot":
@@ -762,6 +764,77 @@ func runHeadlessTitles(cfg ui.Settings, inFile string, threads int,
 		return 1
 	}
 	out("titles finished")
+	if ctx.Err() != nil {
+		return 130
+	}
+	return 0
+}
+
+func runHeadlessClean(cfg ui.Settings, inFile string, threads int,
+	progress func(done, total int64, hits string), renderDone func(done, total int64, hits string)) int {
+	cams, skipped, err := exploit.ParseResultsCreds(inFile)
+	if err != nil {
+		out("[!] err: входной файл: %v", err)
+		return 2
+	}
+	if len(cams) == 0 {
+		out("[!] err: файл пуст или камер не нашлось")
+		return 2
+	}
+
+	logName := strings.TrimSuffix(inFile, filepath.Ext(inFile)) + "_clean.log"
+	headlessLogOpen(logName)
+	unhook := wireHooks(cfg)
+	defer unhook()
+
+	headlessBanner(true)
+	out("started cleaning %d cams", len(cams))
+	if skipped > 0 {
+		out("skipped %d lines", skipped)
+	}
+
+	if threads <= 0 {
+		threads = 200
+	}
+	ctx, stop := headlessSignals()
+	defer stop()
+
+	stats := &exploit.CleanStats{}
+	eventBuf := 4096
+	if threads*64 > eventBuf {
+		eventBuf = threads * 64
+	}
+	events := make(chan string, eventBuf)
+	doneEvents := make(chan struct{})
+	go func() {
+		for line := range events {
+			flog("%s", line)
+		}
+	}()
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				progress(stats.Processed, stats.Total, fmt.Sprintf("cleaned: %d", stats.Cleaned))
+			case <-doneEvents:
+				return
+			}
+		}
+	}()
+
+	exploit.RunClean(ctx, cams, threads, stats, events)
+
+	close(doneEvents)
+	close(events)
+	renderDone(stats.Processed, stats.Total, fmt.Sprintf("cleaned: %d", stats.Cleaned))
+
+	if stats.ErrorMsg != "" {
+		out("[!] err: %s", stats.ErrorMsg)
+		return 1
+	}
+	out("clean finished")
 	if ctx.Err() != nil {
 		return 130
 	}

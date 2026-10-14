@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
+	"krushitel/core/dhip"
 	"krushitel/core/fwd"
 	"krushitel/core/i18n"
 	"krushitel/core/scanner"
@@ -32,7 +33,9 @@ type Settings struct {
 	Debug bool `json:"debug" toml:"debug"`
 
 	ChannelText string    `json:"channel_text" toml:"channel_text"`
-	CustomTexts [5]string `json:"custom_texts" toml:"custom_texts"`
+	CustomTexts [4]string `json:"custom_texts" toml:"custom_texts"`
+
+	OSDColor string `json:"osd_color" toml:"osd_color"`
 
 	Text string `json:"text,omitempty" toml:"text,omitempty"`
 
@@ -72,7 +75,8 @@ func defaultSettings() Settings {
 		Lang:        "ru",
 		IsActivated: false,
 		ChannelText: "",
-		CustomTexts: [5]string{},
+		CustomTexts: [4]string{},
+		OSDColor:    "255,255,255",
 		DummyLogin:  defaultDummyLogin,
 		DummyPass:   defaultDummyPass,
 		Governor:    true,
@@ -145,6 +149,7 @@ func applyTomlMap(m map[string]any, s *Settings) {
 	getStr("dummy_login", &s.DummyLogin)
 	getStr("dummy_pass", &s.DummyPass)
 	getStr("tg_bot_token", &s.TgBotToken)
+	getStr("osd_color", &s.OSDColor)
 
 	getInt := func(key string, dst *int) {
 		switch v := m[key].(type) {
@@ -164,8 +169,8 @@ func applyTomlMap(m map[string]any, s *Settings) {
 	getInt("governor_cap", &s.GovernorCap)
 
 	if arr, ok := m["custom_texts"].([]any); ok {
-		var out [5]string
-		for i := 0; i < len(arr) && i < 5; i++ {
+		var out [4]string
+		for i := 0; i < len(arr) && i < 4; i++ {
 			if str, ok := arr[i].(string); ok {
 				out[i] = str
 			}
@@ -209,6 +214,7 @@ func applyTomlMap(m map[string]any, s *Settings) {
 // белые списки, отрицательные числа, пустые креды. OSD не сбрасывается, а
 // тупо обрезается: channel title до 32 символов, слоты до 22.
 func sanitizeSettings(s *Settings) {
+	s.OSDColor = dhip.SetOSDColor(strings.TrimSpace(s.OSDColor))
 	s.ChannelText = truncateRunes(s.ChannelText, channelTextLimit)
 	for i := range s.CustomTexts {
 		s.CustomTexts[i] = truncateRunes(s.CustomTexts[i], customTextLimit)
@@ -284,6 +290,12 @@ func saveSettings() {
 		return
 	}
 	_ = os.WriteFile(configFile, data, 0644)
+}
+
+// refreshLiveCreds разносит брут-пароли по fwd после правки из TUI,
+// чтобы следующий прогон подхватил их без рестарта.
+func refreshLiveCreds() {
+	fwd.SetDefaultCreds("", mergeBrutePasswords(cfg.BrutePasswords))
 }
 
 func mergeBrutePasswords(custom []string) []string {

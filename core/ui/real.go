@@ -22,6 +22,7 @@ const (
 	runCheck
 	runPrefix
 	runTitles
+	runClean
 )
 
 type runState struct {
@@ -38,6 +39,7 @@ type runState struct {
 	saveDir    string
 	chk        *scanner.ScanStats
 	ttl        *exploit.TitlesStats
+	cln        *exploit.CleanStats
 	genErr     string
 	preScanned int64
 	preFound   int64
@@ -250,6 +252,8 @@ func (r *runState) finished() bool {
 		return atomic.LoadInt64(&r.preDone) == 1
 	case runTitles:
 		return r.ttl != nil && r.ttl.Done
+	case runClean:
+		return r.cln != nil && r.cln.Done
 	}
 	return false
 }
@@ -280,6 +284,8 @@ func (r *runState) statusMsg() string {
 		return r.genErr
 	case runTitles:
 		return r.ttl.ErrorMsg
+	case runClean:
+		return r.cln.ErrorMsg
 	}
 	return ""
 }
@@ -304,6 +310,8 @@ func (r *runState) view() string {
 		sb.WriteString(r.prefixView())
 	case runTitles:
 		sb.WriteString(r.titlesView())
+	case runClean:
+		sb.WriteString(r.cleanView())
 	}
 	return sb.String()
 }
@@ -373,6 +381,24 @@ func (r *runState) titlesView() string {
 	sb.WriteString(centerLine(fmt.Sprintf("%d/%d | titled: %s | off: %s | fail: %s | %s | %s",
 		progress, st.Total,
 		green(fmt.Sprint(atomic.LoadInt64(&st.Titled))), dim(fmt.Sprint(atomic.LoadInt64(&st.Offline))), red(fmt.Sprint(atomic.LoadInt64(&st.Failed))),
+		fmt.Sprintf(tr("%.1f/сек"), st.Speed),
+		r.elapsed())) + "\n\n")
+	sb.WriteString(r.eventsBlock())
+	return sb.String()
+}
+
+func (r *runState) cleanView() string {
+	st := r.cln
+	progress := st.Progress()
+	pct := 0.0
+	if st.Total > 0 {
+		pct = float64(progress) / float64(st.Total) * 100
+	}
+	var sb strings.Builder
+	sb.WriteString(centerLine(fmt.Sprintf("%s %.1f%%", bar(progress, st.Total, 30), pct)) + "\n")
+	sb.WriteString(centerLine(fmt.Sprintf("%d/%d | cleaned: %s | off: %s | fail: %s | %s | %s",
+		progress, st.Total,
+		green(fmt.Sprint(atomic.LoadInt64(&st.Cleaned))), dim(fmt.Sprint(atomic.LoadInt64(&st.Offline))), red(fmt.Sprint(atomic.LoadInt64(&st.Failed))),
 		fmt.Sprintf(tr("%.1f/сек"), st.Speed),
 		r.elapsed())) + "\n\n")
 	sb.WriteString(r.eventsBlock())

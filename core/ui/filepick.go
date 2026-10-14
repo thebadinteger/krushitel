@@ -77,7 +77,10 @@ func (p *pickState) load() {
 	ents, err := os.ReadDir(p.cwd)
 	if err != nil {
 		p.err = err.Error()
-		p.rows = nil
+		// оставляем "..", чтобы было куда уйти назад;
+		// без этого cur указывает в пустоту и enter роняет activate().
+		p.rows = []pickRow{{name: "..", isDir: true}}
+		p.cur, p.top = 0, 0
 		return
 	}
 	type statRow struct {
@@ -125,6 +128,9 @@ func (p *pickState) goUp() {
 }
 
 func (p *pickState) activate() bool {
+	if p.cur < 0 || p.cur >= len(p.rows) {
+		return false
+	}
 	if p.cur == 0 {
 		p.goUp()
 		return false

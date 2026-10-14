@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -117,18 +118,25 @@ func SetChannelTitleUserDial(dial Dialer, user, password, title string) error {
 		return err
 	}
 	// Бленд/цвет/шрифт живут в VideoWidget, а не в таблице имён — дотягиваем
-	// отдельной записью (best-effort: имя уже стоит, это украшение).
-	applyChannelTitleStyle(conn, sess)
+	// отдельной записью с проверкой. Имя уже стоит, но молча уходить нельзя:
+	// иначе channel остаётся старого цвета при новых слотах.
+	if err := styleWithRetry(conn, sess); err != nil {
+		return fmt.Errorf("стиль: %w", err)
+	}
 	return nil
 }
 
 // applyChannelTitleStyle дотягивает параметры титров фантома поверх имён:
-// EncodeBlend + PreviewBlend, FontSize 12, розовый на прозрачном.
-// Ошибки глотаем: имя уже записано, это только оформление.
-func applyChannelTitleStyle(conn net.Conn, sess int) {
+// EncodeBlend + PreviewBlend, FontSize 12, цвет из настроек.
+// Раньше ошибки глотались и channel оставался старого цвета (зелёный)
+// при белых слотах — теперь verify чтением назад, молча не уходим.
+func applyChannelTitleStyle(conn net.Conn, sess int) error {
 	table, err := configGetTable(conn, sess, 23, "VideoWidget")
 	if err != nil {
-		return
+		return err
+	}
+	if len(table) == 0 {
+		return fmt.Errorf("VideoWidget: пустая таблица")
 	}
 	for i := range table {
 		entry, ok := table[i].(map[string]any)
@@ -146,7 +154,78 @@ func applyChannelTitleStyle(conn net.Conn, sess int) {
 		ct["FrontColor"] = titleFrontColor()
 		ct["BackColor"] = titleBackColor()
 	}
-	_, _ = configSetTable(conn, sess, 24, "VideoWidget", table)
+	if _, err := configSetTable(conn, sess, 24, "VideoWidget", table); err != nil {
+		return err
+	}
+	return verifyChannelStyle(conn, sess)
+}
+
+// verifyChannelStyle читает VideoWidget назад и проверяет, что FrontColor
+// первого канала сошёлся с желаемым. Камеры молча игнорят запись.
+func verifyChannelStyle(conn net.Conn, sess int) error {
+	table, err := configGetTable(conn, sess, 25, "VideoWidget")
+	if err != nil {
+		return err
+	}
+	want := osdFront
+	for _, e := range table {
+		entry, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		ct, ok := entry["ChannelTitle"].(map[string]any)
+		if !ok {
+			continue
+		}
+		got, ok := ct["FrontColor"].([]any)
+		if !ok || len(got) != 4 {
+			continue
+		}
+		match := true
+		for i := 0; i < 4; i++ {
+			f, ok := toFloat(got[i])
+			if !ok || int(f) != want[i] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return nil
+		}
+		return fmt.Errorf("VideoWidget: цвет не прижился (прочиталось %v, хотели %v)", got, want)
+	}
+	return fmt.Errorf("VideoWidget: нет ChannelTitle для проверки")
+}
+
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	}
+	return 0, false
+}
+
+// styleWithRetry жмёт стиль несколько раз: камеры иногда глотают первую запись.
+func styleWithRetry(conn net.Conn, sess int) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(2 * time.Second)
+		}
+		if err = applyChannelTitleStyle(conn, sess); err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 func SetCustomTitle(addr, password, title string, timeout time.Duration) (bool, error) {
@@ -175,12 +254,54 @@ func defaultSlotRect(slot int) []int {
 	return []int{200, y1, 4500, y2}
 }
 
-// Шрифт титров как у phantom (SetPhantomOverlayCGI). Цвета — классика:
-// белый текст, полупрозрачный чёрный фон.
+// Шрифт титров как у phantom (SetPhantomOverlayCGI).
 const titleFontSize = 12
 
-func titleFrontColor() []any { return []any{0, 255, 0, 255} }
-func titleBackColor() []any  { return []any{0, 0, 0, 128} }
+func titleFrontColor() []any {
+	f := osdFront
+	return []any{f[0], f[1], f[2], f[3]}
+}
+
+func titleBackColor() []any {
+	b := osdBack
+	return []any{b[0], b[1], b[2], b[3]}
+}
+
+var (
+	osdFront = [4]int{255, 255, 255, 255}
+	osdBack  = [4]int{0, 0, 0, 128}
+)
+
+// ParseOSDColor разбирает ТОЛЬКО R,G,B (запятые, каждый 0-255).
+// Ничего другого нет. Альфа не трогается — всегда 255.
+func ParseOSDColor(s string) (front [4]int, ok bool) {
+	parts := strings.Split(strings.TrimSpace(s), ",")
+	if len(parts) != 3 {
+		return [4]int{}, false
+	}
+	var rgb [3]int
+	for i := 0; i < 3; i++ {
+		n, err := strconv.Atoi(strings.TrimSpace(parts[i]))
+		if err != nil || n < 0 || n > 255 {
+			return [4]int{}, false
+		}
+		rgb[i] = n
+	}
+	return [4]int{rgb[0], rgb[1], rgb[2], 255}, true
+}
+
+// SetOSDColor ставит цвет текста OSD, возвращает нормализованное R,G,B.
+// Мусор → белый (дефолт). Фон всегда полупрозрачный чёрный.
+func SetOSDColor(name string) string {
+	if front, ok := ParseOSDColor(name); ok {
+		osdFront = front
+		osdBack = [4]int{0, 0, 0, 128}
+		return fmt.Sprintf("%d,%d,%d", front[0], front[1], front[2])
+	}
+	osdFront = [4]int{255, 255, 255, 255}
+	osdBack = [4]int{0, 0, 0, 128}
+	return "255,255,255"
+}
 
 func isZeroRect(r any) bool {
 	if r == nil {

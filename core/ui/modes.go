@@ -67,7 +67,7 @@ func startExploitRun(m *model) {
 		if len(done) > 0 {
 			var question string
 			if len(prefixes) > 0 {
-				question = fmt.Sprintf(tr("прерванный прогон (%s): отработано %d. продолжить? (нет = заново)"),
+				question = fmt.Sprintf(tr("прерванный скан (%s): отработано %d. продолжить? "),
 					sess.InFile, len(done))
 			} else {
 				remaining := make([]string, 0, len(direct))
@@ -76,7 +76,7 @@ func startExploitRun(m *model) {
 						remaining = append(remaining, s)
 					}
 				}
-				question = fmt.Sprintf(tr("прерванный прогон (%s): отработано %d, осталось %d. продолжить с оставшихся? (нет = заново)"),
+				question = fmt.Sprintf(tr("прерванный скан (%s): отработано %d, осталось %d. продолжить с оставшихся? "),
 					sess.InFile, len(done), len(remaining))
 			}
 			confirm := newFormState(tr("ломаем"), func(m *model) {
@@ -196,6 +196,53 @@ func titlesForm() *formState {
 	f.lastPick(pickFile)
 	f.addInt(tr("потоков"), 200)
 	return f
+}
+
+func cleanForm() *formState {
+	f := newFormState(tr("OSDCleaner"), func(m *model) {
+		startCleanRun(m)
+	})
+	f.addStr(tr("файл с камерами (results.txt)"), true, true)
+	f.lastPick(pickFile)
+	f.addInt(tr("потоков"), 200)
+	return f
+}
+
+func startCleanRun(m *model) {
+	inFile := m.form.fields[0].strVal
+	threads := m.threadsVal(1)
+
+	cams, skipped, err := exploit.ParseResultsCreds(inFile)
+	if err != nil {
+		showMsg(m, tr("OSDCleaner"), red("[-] "+tr("ошибка чтения входного файла: ")+err.Error()))
+		return
+	}
+	if len(cams) == 0 {
+		showMsg(m, tr("OSDCleaner"), red("[-] "+tr("Файл пуст")))
+		return
+	}
+
+	launchCleanRun(m, inFile, threads, cams, skipped)
+}
+
+func launchCleanRun(m *model, inFile string, threads int, cams []exploit.CamCred, skipped int) {
+	stats := &exploit.CleanStats{}
+	r := newRunState(runClean, tr("OSDCleaner"))
+	r.cln = stats
+	r.openLog(strings.TrimSuffix(inFile, filepath.Ext(inFile)) + "_clean.log")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r.cancel = cancel
+	m.form = nil
+	m.run = r
+	m.state = stRun
+
+	if skipped > 0 {
+		line := fmt.Sprintf(tr("[!] пропущено строк мимо формата: %d"), skipped)
+		r.eventsCh <- line
+	}
+
+	go exploit.RunClean(ctx, cams, threads, stats, r.eventsCh)
 }
 
 func startTitlesRun(m *model) {
@@ -335,7 +382,7 @@ func prefixForm() *formState {
 	f.addInt(tr("порт"), 37777)
 	f.addInt(tr("потоков"), 500)
 	f.addStr(tr("выходной файл (база, без расширения)"), true, false)
-	f.addStr(tr("фильтр моделей (через запятую, пусто = все)"), false, false)
+	f.addStr(tr("фильтр моделей: "), false, false)
 	return f
 }
 

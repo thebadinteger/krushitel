@@ -11,6 +11,9 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"krushitel/core/dhip"
 	"krushitel/core/exploit"
 	"krushitel/core/i18n"
 	"krushitel/core/scanner"
@@ -28,8 +31,6 @@ const (
 	stXMLMenu
 	stMsg
 	stSettings
-	stTitleEdit
-	stDummyEdit
 	stGreet
 	stUpdate
 	stUpdating
@@ -57,12 +58,14 @@ type model struct {
 	quitting   bool
 	restarting bool
 
-	titleInput textinput.Model
-	titleErr   string
-	titleField int
+	setEdit    int
+	setInput   textinput.Model
+	setEditErr string
+	setEditLW  int
 
-	dummyInput textinput.Model
-	dummyErr   string
+	bruteCur    int
+	bruteAdding bool
+	bruteFocus  bool
 
 	upd       *update.Release
 	updCancel context.CancelFunc
@@ -134,15 +137,7 @@ func Run() bool {
 
 func initialModel(upd *update.Release) model {
 	loadSettings()
-	ti := textinput.New()
-	ti.Placeholder = "pwned by krushitel"
-	ti.CharLimit = 64
-	ti.Width = 50
-	di := textinput.New()
-	di.Placeholder = "login:passwd"
-	di.CharLimit = 65
-	di.Width = 50
-	m := model{state: stMenu, titleInput: ti, dummyInput: di}
+	m := model{state: stMenu, setEdit: -1}
 	if upd != nil {
 		i18n.SetLang(cfg.Lang)
 		m.upd = upd
@@ -175,6 +170,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
 		termWidth = msg.Width
+		m.fitEditBox()
 		return m, nil
 
 	case tickMsg:
@@ -217,10 +213,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateMsg(msg)
 		case stSettings:
 			return m.updateSettings(msg)
-		case stTitleEdit:
-			return m.updateTitleEdit(msg)
-		case stDummyEdit:
-			return m.updateDummyEdit(msg)
 		case stUpdate:
 			return m.updateUpdatePrompt(msg)
 		case stUpdating:
@@ -285,6 +277,7 @@ type mainMenuItemKind int
 const (
 	menuItemExploit mainMenuItemKind = iota
 	menuItemTitles
+	menuItemClean
 	menuItemXML
 	menuItemFindPrefix
 	menuItemSettings
@@ -300,9 +293,10 @@ func (m model) mainMenuItems() []mainMenuItem {
 	return []mainMenuItem{
 		{kind: menuItemExploit, num: "1", label: "ломать камеры"},
 		{kind: menuItemTitles, num: "2", label: "OSDChanger"},
-		{kind: menuItemXML, num: "3", label: "расшифровать .xml от smartpss"},
-		{kind: menuItemFindPrefix, num: "4", label: "искать префиксы с списка IP"},
-		{kind: menuItemSettings, num: "5", label: "настройки"},
+		{kind: menuItemClean, num: "3", label: "OSDCleaner"},
+		{kind: menuItemXML, num: "4", label: "расшифровать .xml от smartpss"},
+		{kind: menuItemFindPrefix, num: "5", label: "искать префиксы с списка IP"},
+		{kind: menuItemSettings, num: "6", label: "настройки"},
 	}
 }
 
@@ -320,7 +314,7 @@ func (m model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyRunes:
 		r := msg.Runes[0]
-		if r >= '1' && r <= '5' {
+		if r >= '1' && r <= '6' {
 			for i, item := range items {
 				if item.num == string(r) {
 					m.cursor = i
@@ -342,6 +336,10 @@ func (m model) selectMenuItem(kind mainMenuItemKind) (tea.Model, tea.Cmd) {
 		m.form = titlesForm()
 		m.state = stForm
 		m.prevMenu = stMenu
+	case menuItemClean:
+		m.form = cleanForm()
+		m.state = stForm
+		m.prevMenu = stMenu
 	case menuItemXML:
 		m.state = stXMLMenu
 		m.xmlCur = 0
@@ -352,6 +350,8 @@ func (m model) selectMenuItem(kind mainMenuItemKind) (tea.Model, tea.Cmd) {
 	case menuItemSettings:
 		m.state = stSettings
 		m.setCur = 0
+		m.setEdit = -1
+		m.setEditErr = ""
 	}
 	if m.form != nil {
 		m.form.focus()
@@ -644,8 +644,11 @@ const (
 	rowEditCT1
 	rowEditCT2
 	rowEditCT3
-	rowEditCT4
+	rowOSDColor
+	rowSkip
 	rowDummy
+	rowWipe
+	rowBrute
 	rowDebug
 	rowGovernor
 	rowGovCap
@@ -661,38 +664,31 @@ func govCapLabel(cap int) string {
 	return fmt.Sprintf("%d", cap)
 }
 
-func nextGovCap(cur int) int {
-	steps := []int{0, 250, 500, 1000, 2000, 3000, 5000, 10000}
-	for i, s := range steps {
-		if s == cur {
-			return steps[(i+1)%len(steps)]
-		}
-	}
-	return 0
-}
-
 func (m model) settingsRows() []settingsRow {
 	rows := []settingsRow{
 		{fmt.Sprintf(tr("снапы (%s)"), onOff(cfg.Snaps)), rowSnaps},
 		{fmt.Sprintf(tr("autogen .xml (%s)"), onOff(cfg.XML)), rowXML},
-		{fmt.Sprintf(tr("настройки OSDChanger (%s)"), onOff(cfg.Titles)), rowTitles},
+		{fmt.Sprintf(tr("OSDChanger (%s)"), onOff(cfg.Titles)), rowTitles},
 	}
-	if cfg.Titles {
-		rows = append(rows,
-			settingsRow{fmt.Sprintf(tr("   └ channel title: %s"), quoteVal(cfg.ChannelText)), rowEditChan},
-			settingsRow{fmt.Sprintf(tr("   └ OSD слот %d: %s"), 1, quoteVal(cfg.CustomTexts[0])), rowEditCT0},
-			settingsRow{fmt.Sprintf(tr("   └ OSD слот %d: %s"), 2, quoteVal(cfg.CustomTexts[1])), rowEditCT1},
-			settingsRow{fmt.Sprintf(tr("   └ OSD слот %d: %s"), 3, quoteVal(cfg.CustomTexts[2])), rowEditCT2},
-			settingsRow{fmt.Sprintf(tr("   └ OSD слот %d: %s"), 4, quoteVal(cfg.CustomTexts[3])), rowEditCT3},
-			settingsRow{fmt.Sprintf(tr("   └ OSD слот %d: %s"), 5, quoteVal(cfg.CustomTexts[4])), rowEditCT4},
-		)
-	}
+	// сабы OSD всегда в списке: при выкл OSDChanger они серые
+	// (setRowEnabled) и скипаются курсором (setStep).
+	rows = append(rows,
+		settingsRow{fmt.Sprintf(tr("   └ channel title: %s"), quoteVal(cfg.ChannelText)), rowEditChan},
+		settingsRow{fmt.Sprintf(tr("   └ OSD слот %d: %s"), 1, quoteVal(cfg.CustomTexts[0])), rowEditCT0},
+		settingsRow{fmt.Sprintf(tr("   └ OSD слот %d: %s"), 2, quoteVal(cfg.CustomTexts[1])), rowEditCT1},
+		settingsRow{fmt.Sprintf(tr("   └ OSD слот %d: %s"), 3, quoteVal(cfg.CustomTexts[2])), rowEditCT2},
+		settingsRow{fmt.Sprintf(tr("   └ OSD слот %d: %s"), 4, quoteVal(cfg.CustomTexts[3])), rowEditCT3},
+		settingsRow{fmt.Sprintf(tr("   └ цвет OSD: %s"), "["+osdColorName(cfg.OSDColor)+"]"), rowOSDColor},
+	)
 	langLabel := "язык: русский"
 	if cfg.Lang == "en" {
 		langLabel = "language: english"
 	}
 	rows = append(rows,
+		settingsRow{fmt.Sprintf(tr("пропускать проблемных (%s)"), onOff(cfg.SkipShitty)), rowSkip},
 		settingsRow{tr("добавить нового юзера"), rowDummy},
+		settingsRow{fmt.Sprintf(tr("вычистка юзеров (%s)"), onOff(cfg.WipeUsers)), rowWipe},
+		settingsRow{fmt.Sprintf(tr("пары кредов: %s"), bruteCount()), rowBrute},
 		settingsRow{fmt.Sprintf(tr("лог-режим (%s)"), onOff(cfg.Debug)), rowDebug},
 		settingsRow{fmt.Sprintf(tr("губернатор скорости (%s)"), onOff(cfg.Governor)), rowGovernor},
 		settingsRow{fmt.Sprintf(tr("потолок pps: %s"), govCapLabel(cfg.GovernorCap)), rowGovCap},
@@ -703,18 +699,51 @@ func (m model) settingsRows() []settingsRow {
 	return rows
 }
 
+// setStep — шаг курсора с пропуском серых (неактивных) строк.
+// Всегда завершается: строка-тоггл (OSDChanger) активна всегда.
+func setStep(rows []settingsRow, cur, dir int) int {
+	for i := 0; i < len(rows); i++ {
+		cur = (cur + dir + len(rows)) % len(rows)
+		if setRowEnabled(rows[cur].kind, &cfg) {
+			return cur
+		}
+	}
+	return cur
+}
+
 func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.setEdit >= 0 {
+		return m.updateSettingsEdit(msg)
+	}
+	if m.bruteAdding {
+		return m.updateBruteAdding(msg)
+	}
+	if m.bruteFocus {
+		return m.updateBruteFocus(msg)
+	}
 	rows := m.settingsRows()
+	if m.setCur >= len(rows) {
+		m.setCur = len(rows) - 1
+	}
+	if m.setCur < 0 {
+		m.setCur = 0
+	}
 	switch msg.Type {
 	case tea.KeyUp:
-		m.setCur = (m.setCur - 1 + len(rows)) % len(rows)
+		m.setCur = setStep(rows, m.setCur, -1)
+		m.bruteFocus = false
 	case tea.KeyDown:
-		m.setCur = (m.setCur + 1) % len(rows)
+		m.setCur = setStep(rows, m.setCur, 1)
+		m.bruteFocus = false
 	case tea.KeyEsc:
 		m.state = stMenu
 	case tea.KeyEnter, tea.KeySpace:
 		if m.setCur >= len(rows) {
 			m.setCur = 0
+			return m, nil
+		}
+		// серая строка (OSD при выкл): enter/пробел ничего не делают.
+		if !setRowEnabled(rows[m.setCur].kind, &cfg) {
 			return m, nil
 		}
 		switch rows[m.setCur].kind {
@@ -727,37 +756,34 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case rowTitles:
 			cfg.Titles = !cfg.Titles
 			saveSettings()
-		case rowEditChan:
-			m.openTitleEdit(0)
-			return m, textinput.Blink
-		case rowEditCT0:
-			m.openTitleEdit(1)
-			return m, textinput.Blink
-		case rowEditCT1:
-			m.openTitleEdit(2)
-			return m, textinput.Blink
-		case rowEditCT2:
-			m.openTitleEdit(3)
-			return m, textinput.Blink
-		case rowEditCT3:
-			m.openTitleEdit(4)
-			return m, textinput.Blink
-		case rowEditCT4:
-			m.openTitleEdit(5)
-			return m, textinput.Blink
-		case rowDummy:
-			m.openDummyEdit()
-			return m, textinput.Blink
+			// выключили стоя на серой строке — курсор на OSDChanger.
+			if !setRowEnabled(rows[m.setCur].kind, &cfg) {
+				m.setCur = setStep(rows, m.setCur, -1)
+			}
+		case rowEditChan, rowEditCT0, rowEditCT1, rowEditCT2, rowEditCT3, rowDummy, rowOSDColor:
+			return m.openSetEdit(m.setCur)
+		case rowSkip:
+			cfg.SkipShitty = !cfg.SkipShitty
+			saveSettings()
+		case rowWipe:
+			cfg.WipeUsers = !cfg.WipeUsers
+			saveSettings()
+		case rowBrute:
+			m.bruteFocus = true
+			m.bruteCur = 0
+			m.bruteAdding = false
+			m.setEditErr = ""
+			return m, nil
+		case rowGovCap:
+			cfg.GovernorCap = nextGovCap(cfg.GovernorCap)
+			scanner.GovernorCap = cfg.GovernorCap
+			saveSettings()
 		case rowDebug:
 			cfg.Debug = !cfg.Debug
 			saveSettings()
 		case rowGovernor:
 			cfg.Governor = !cfg.Governor
 			scanner.GovernorOn = cfg.Governor
-			saveSettings()
-		case rowGovCap:
-			cfg.GovernorCap = nextGovCap(cfg.GovernorCap)
-			scanner.GovernorCap = cfg.GovernorCap
 			saveSettings()
 		case rowDiscord:
 			cfg.DiscordRPC = !cfg.DiscordRPC
@@ -778,6 +804,283 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// govCaps — фиксированные ступени потолка pps, 0 = авто.
+// Enter крутит по кругу: … → 10000 → авто → 250 → …
+var govCaps = []int{250, 500, 750, 1000, 1500, 2000, 3000, 3500, 4000, 4500, 5000, 6000, 7000, 8000, 9000, 10000, 0}
+
+func nextGovCap(cur int) int {
+	for i, s := range govCaps {
+		if s == cur {
+			return govCaps[(i+1)%len(govCaps)]
+		}
+	}
+	return govCaps[0]
+}
+
+func osdColorName(key string) string { return key }
+
+// setEditLimit — лимит символов для строковой строки, 0 = не строка.
+func setEditLimit(kind int) int {
+	switch kind {
+	case rowEditChan:
+		return channelTextLimit
+	case rowEditCT0, rowEditCT1, rowEditCT2, rowEditCT3:
+		return customTextLimit
+	case rowOSDColor:
+		return 15
+	case rowDummy:
+		return 65
+	}
+	return 0
+}
+
+func setEditVal(kind int) string {
+	switch kind {
+	case rowEditChan:
+		return cfg.ChannelText
+	case rowEditCT0, rowEditCT1, rowEditCT2, rowEditCT3:
+		return cfg.CustomTexts[kind-rowEditCT0]
+	case rowOSDColor:
+		return cfg.OSDColor
+	case rowDummy:
+		return cfg.DummyLogin + ":" + cfg.DummyPass
+	}
+	return ""
+}
+
+func (m model) openSetEdit(idx int) (tea.Model, tea.Cmd) {
+	rows := m.settingsRows()
+	if idx < 0 || idx >= len(rows) {
+		return m, nil
+	}
+	kind := rows[idx].kind
+	T, LW, _ := settingsWidths()
+	need := setEditNeed(idx, rows)
+	LW2 := LW
+	if need > LW2 {
+		LW2 = need
+		if LW2 > T-7-20 {
+			LW2 = T - 7 - 20
+		}
+	}
+	// +1 клетка — курсор textinput всегда торчит за Width.
+	w := LW2 - setRowPrefixW(kind) - len([]rune(setRowLabelText(kind))) - 5
+	if w < 8 {
+		w = 8
+	}
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.CharLimit = 512
+	ti.Width = w
+	if lim := setEditLimit(kind); lim > 0 {
+		ti.CharLimit = lim
+	}
+	if kind == rowGovCap {
+		ti.Placeholder = tr("авто")
+	}
+	ti.SetValue(setEditVal(kind))
+	ti.Focus()
+	m.setEdit = idx
+	m.setEditLW = LW2
+	m.setEditErr = ""
+	m.setInput = ti
+	m.bruteFocus = false
+	m.bruteAdding = false
+	return m, textinput.Blink
+}
+
+func (m model) updateSettingsEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.setEdit = -1
+		m.setEditErr = ""
+		return m, nil
+	case tea.KeyEnter:
+		return m.commitSetEdit()
+	}
+	var cmd tea.Cmd
+	m.setInput, cmd = m.setInput.Update(msg)
+	return m, cmd
+}
+
+func (m model) commitSetEdit() (tea.Model, tea.Cmd) {
+	rows := m.settingsRows()
+	if m.setEdit < 0 || m.setEdit >= len(rows) {
+		m.setEdit = -1
+		return m, nil
+	}
+	kind := rows[m.setEdit].kind
+	val := noNewlines(strings.TrimSpace(m.setInput.Value()))
+	switch kind {
+	case rowEditChan, rowEditCT0, rowEditCT1, rowEditCT2, rowEditCT3:
+		limit := setEditLimit(kind)
+		if n := len([]rune(val)); n > limit {
+			m.setEditErr = fmt.Sprintf(tr("ограничение: максимум %d символов (у тебя %d)"), limit, n)
+			return m, nil
+		}
+		if kind == rowEditChan {
+			cfg.ChannelText = val
+		} else {
+			cfg.CustomTexts[kind-rowEditCT0] = val
+		}
+		saveSettings()
+	case rowOSDColor:
+		if _, ok := dhip.ParseOSDColor(val); !ok {
+			m.setEditErr = tr("формат: R,G,B (0-255)")
+			return m, nil
+		}
+		cfg.OSDColor = dhip.SetOSDColor(val)
+		saveSettings()
+	case rowDummy:
+		login, pass, ok := strings.Cut(val, ":")
+		if !ok || login == "" || pass == "" {
+			m.setEditErr = tr("нужен формат login:passwd")
+			return m, nil
+		}
+		if err := exploit.ValidateDummy(login, pass); err != nil {
+			m.setEditErr = err.Error()
+			return m, nil
+		}
+		cfg.DummyLogin, cfg.DummyPass = login, pass
+		saveSettings()
+	}
+	m.setEdit = -1
+	m.setEditErr = ""
+	return m, nil
+}
+
+func noNewlines(s string) string {
+	s = strings.ReplaceAll(s, "\r", "")
+	return strings.ReplaceAll(s, "\n", " ")
+}
+
+// fitEditBox переживает ресайз посреди правки: панель ужимается,
+// вьюпорт инпута пересчитывается, оффсеты обновляются через SetCursor.
+func (m *model) fitEditBox() {
+	if m.state != stSettings || m.setEdit < 0 {
+		return
+	}
+	rows := m.settingsRows()
+	if m.setEdit >= len(rows) {
+		return
+	}
+	T, _, _ := settingsWidths()
+	LW2 := m.setEditLW
+	if max := T - 7 - 20; LW2 > max {
+		LW2 = max
+	}
+	kind := rows[m.setEdit].kind
+	w := LW2 - setRowPrefixW(kind) - len([]rune(setRowLabelText(kind))) - 5
+	if w < 8 {
+		w = 8
+	}
+	m.setEditLW = LW2
+	m.setInput.Width = w
+	m.setInput.SetCursor(m.setInput.Position())
+}
+
+func (m model) settingsHelp() string {
+	if m.setEdit >= 0 {
+		return tr("enter — сохранить · esc — отмена")
+	}
+	if m.bruteAdding {
+		return tr("enter — добавить · esc — отмена")
+	}
+	if m.bruteFocus {
+		return tr("↑↓ — выбор · a — добавить · d — удалить · enter/esc — назад")
+	}
+	return tr("↑↓ навигация  ·  enter/пробел - переключить  ·  esc — назад")
+}
+
+func bruteCount() string {
+	n := len(cfg.BrutePasswords)
+	if n == 0 {
+		return tr("(пусто)")
+	}
+	return fmt.Sprintf(tr("%d шт."), n)
+}
+
+// updateBruteFocus — курсор в списке паролей (правая панель):
+// ↑↓ — выбор, d — удалить, a — добавить, esc/enter — назад в строки.
+func (m model) updateBruteFocus(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyUp:
+		if len(cfg.BrutePasswords) > 0 {
+			m.bruteCur = (m.bruteCur - 1 + len(cfg.BrutePasswords)) % len(cfg.BrutePasswords)
+		}
+	case tea.KeyDown:
+		if len(cfg.BrutePasswords) > 0 {
+			m.bruteCur = (m.bruteCur + 1) % len(cfg.BrutePasswords)
+		}
+	case tea.KeyEsc, tea.KeyEnter:
+		m.bruteFocus = false
+		return m, nil
+	case tea.KeyRunes:
+		if len(msg.Runes) != 1 {
+			return m, nil
+		}
+		switch msg.Runes[0] {
+		case 'a', 'A', 'ф', 'Ф':
+			_, _, listRW := settingsWidths()
+			ti := textinput.New()
+			ti.Prompt = ""
+			ti.Placeholder = "admin:password"
+			ti.CharLimit = 128
+			// -14 метка, -1 курсор: View всегда шире Width на клетку.
+			ti.Width = listRW - len("login:passwd: ") - 1
+			if ti.Width < 10 {
+				ti.Width = 10
+			}
+			ti.Focus()
+			m.setInput = ti
+			m.setEditErr = ""
+			m.bruteAdding = true
+			return m, textinput.Blink
+		case 'd', 'D', 'в', 'В':
+			if len(cfg.BrutePasswords) > 0 && m.bruteCur < len(cfg.BrutePasswords) {
+				cfg.BrutePasswords = append(cfg.BrutePasswords[:m.bruteCur], cfg.BrutePasswords[m.bruteCur+1:]...)
+				saveSettings()
+				refreshLiveCreds()
+				if m.bruteCur >= len(cfg.BrutePasswords) {
+					m.bruteCur = len(cfg.BrutePasswords) - 1
+				}
+				if m.bruteCur < 0 {
+					m.bruteCur = 0
+				}
+			}
+		}
+	}
+	return m, nil
+}
+
+// updateBruteAdding — строка ввода нового пароля. Все клавиши,
+// включая d, идут в инпут и ничего не удаляют.
+func (m model) updateBruteAdding(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.bruteAdding = false
+		m.setEditErr = ""
+		return m, nil
+	case tea.KeyEnter:
+		val := strings.TrimSpace(m.setInput.Value())
+		login, pass, ok := strings.Cut(val, ":")
+		if !ok || login == "" || pass == "" {
+			m.setEditErr = tr("нужен формат login:passwd")
+			return m, nil
+		}
+		cfg.BrutePasswords = append(cfg.BrutePasswords, val)
+		saveSettings()
+		refreshLiveCreds()
+		m.bruteAdding = false
+		m.setEditErr = ""
+		m.bruteCur = len(cfg.BrutePasswords) - 1
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.setInput, cmd = m.setInput.Update(msg)
+	return m, cmd
 }
 
 func (m model) View() string {
@@ -811,11 +1114,7 @@ func (m model) View() string {
 	case stMsg:
 		content = m.msgView()
 	case stSettings:
-		content, help = m.settingsView(), tr("↑↓ навигация  ·  enter/пробел - переключить  ·  esc — назад")
-	case stTitleEdit:
-		content, help = m.titleEditView(), tr("enter - сохранить  ·  esc - назад  ·  ctrl+c - выход")
-	case stDummyEdit:
-		content, help = m.dummyEditView(), tr("enter - сохранить  ·  esc - назад  ·  ctrl+c - выход")
+		content, help = m.settingsView(), m.settingsHelp()
 	case stUpdate:
 		content, help = m.updatePromptView(), ""
 	case stUpdating:
@@ -871,12 +1170,175 @@ func (m model) msgView() string {
 }
 
 func (m model) settingsView() string {
+	rows := m.settingsRows()
+	if len(rows) == 0 {
+		return ""
+	}
+	if m.setCur < 0 || m.setCur >= len(rows) {
+		m.setCur = 0
+	}
+	if termWidth > 0 && termWidth-4 < 72 {
+		return m.settingsViewSingle(rows)
+	}
+	var sb strings.Builder
+	sb.WriteString(bannerBlock())
+	sb.WriteString(strings.Repeat("\n", 4))
+
+	T, LW, RW := settingsWidths()
+	// в режиме правки панель заморожена на ширине, посчитанной
+	// при открытии (setEditLW): инпут скроллится вьюпортом,
+	// рамка не прыгает и не рвётся.
+	editing := m.setEdit >= 0 && m.setEdit < len(rows)
+	if editing && m.setEditLW > 0 {
+		LW = m.setEditLW
+		if LW > T-7-20 {
+			LW = T - 7 - 20
+		}
+		RW = T - 7 - LW
+	}
+
+	left := m.settingsLeftLines(rows, LW)
+	var right []string
+	rightTitle := tr("описание")
+	if rows[m.setCur].kind == rowBrute || m.bruteFocus || m.bruteAdding {
+		rightTitle, right = m.settingsBruteList(RW)
+	} else {
+		_, right = m.settingsDesc(rows[m.setCur].kind, RW)
+	}
+
+	var lines []string
+	lines = append(lines,
+		"┌"+borderTitle(tr("настройки"), LW+2)+
+			"┬"+borderTitle(rightTitle, RW+2)+"┐")
+	lines = append(lines, setCellRow("", "", LW, RW))
+	n := len(left)
+	if len(right) > n {
+		n = len(right)
+	}
+	for i := 0; i < n; i++ {
+		l, r := "", ""
+		if i < len(left) {
+			l = left[i]
+		}
+		if i < len(right) {
+			r = right[i]
+		}
+		lines = append(lines, setCellRow(l, r, LW, RW))
+	}
+	lines = append(lines, setCellRow("", "", LW, RW))
+	lines = append(lines,
+		"└"+strings.Repeat("─", LW+2)+
+			"┴"+strings.Repeat("─", RW+2)+"┘")
+
+	pad := 4
+	if termWidth > 0 {
+		pad = (termWidth - T) / 2
+		if pad < 0 {
+			pad = 0
+		}
+	}
+	for i := range lines {
+		lines[i] = strings.Repeat(" ", pad) + lines[i]
+	}
+	sb.WriteString(strings.Repeat("\n", m.settingsPadTop(len(lines))))
+	sb.WriteString(strings.Join(lines, "\n"))
+	return sb.String()
+}
+
+// settingsPadTop — сколько пустых строк всунуть между баннером и
+// панелью, чтобы та висела по середине терминала.
+func (m model) settingsPadTop(boxH int) int {
+	if m.h <= 0 {
+		return 0
+	}
+	bannerH := strings.Count(bannerBlock(), "\n") + 1 + 4
+	if avail := m.h - bannerH - 1; avail > boxH {
+		return (avail - boxH) / 2
+	}
+	return 0
+}
+
+func clampSetW(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+func settingsWidths() (T, LW, RW int) {
+	T = 95
+	if termWidth > 0 {
+		T = termWidth - 4
+		if T > 120 {
+			T = 120
+		}
+	}
+	LW = clampSetW(T*45/100, 37, 54)
+	RW = T - 7 - LW
+	return T, LW, RW
+}
+
+// setEditNeed — сколько клеток нужно строке правки целиком.
+func setEditNeed(idx int, rows []settingsRow) int {
+	kind := rows[idx].kind
+	label := setRowLabelText(kind)
+	lim := setEditLimit(kind)
+	val := len([]rune(setEditVal(kind)))
+	if lim > 0 && val > lim {
+		val = lim
+	}
+	return setRowPrefixW(kind) + len([]rune(label)) + 2 + 2 + val
+}
+
+func setRowPrefixW(kind int) int {
+	if kind == rowEditChan || (kind >= rowEditCT0 && kind <= rowEditCT3) {
+		return 4
+	}
+	return 2
+}
+
+// setRowLabelText — метка строки без значения (для ширины и рендера).
+func setRowLabelText(kind int) string {
+	switch kind {
+	case rowSnaps:
+		return tr("снапы")
+	case rowXML:
+		return "autogen .xml"
+	case rowTitles:
+		return "OSDChanger"
+	case rowEditChan:
+		return tr("└ channel title")
+	case rowEditCT0, rowEditCT1, rowEditCT2, rowEditCT3:
+		return fmt.Sprintf(tr("└ OSD слот %d"), int(kind-rowEditCT0)+1)
+	case rowOSDColor:
+		return tr("└ цвет OSD")
+	case rowDummy:
+		return tr("добавить нового юзера")
+	case rowDebug:
+		return tr("лог-режим")
+	case rowGovernor:
+		return tr("губернатор скорости")
+	case rowGovCap:
+		return tr("потолок pps")
+	case rowDiscord:
+		return tr("discord rpc")
+	case rowLang:
+		return tr("язык")
+	case rowBack:
+		return tr("назад")
+	}
+	return ""
+}
+
+func (m model) settingsViewSingle(rows []settingsRow) string {
 	var sb strings.Builder
 	sb.WriteString(bannerBlock())
 	sb.WriteString(strings.Repeat("\n", 4))
 	sb.WriteString(panelS(tr("настройки")) + "\n\n")
 
-	rows := m.settingsRows()
 	var lines []string
 	for i, row := range rows {
 		if i == m.setCur {
@@ -885,126 +1347,371 @@ func (m model) settingsView() string {
 			lines = append(lines, "   "+row.label)
 		}
 	}
+	sb.WriteString(strings.Repeat("\n", m.settingsPadTop(len(lines))))
 	sb.WriteString(centerBlock(lines))
 	return sb.String()
 }
 
-func (m *model) openTitleEdit(field int) {
-	m.titleField = field
-	if field == 0 {
-		m.titleInput.SetValue(cfg.ChannelText)
-		m.titleInput.CharLimit = 32
-	} else {
-		m.titleInput.SetValue(cfg.CustomTexts[field-1])
-		m.titleInput.CharLimit = 22
+func borderTitle(title string, w int) string {
+	t := " " + title + " "
+	if n := w - len([]rune(t)); n >= 0 {
+		left := n / 2
+		return styleDim.Render(strings.Repeat("─", left)) + t +
+			styleDim.Render(strings.Repeat("─", n-left))
 	}
-	m.titleErr = ""
-	m.titleInput.Focus()
-	m.state = stTitleEdit
+	return cutStr(t, w)
 }
 
-func (m model) updateTitleEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc:
-		m.titleErr = ""
-		m.state = stSettings
-		return m, nil
-	case tea.KeyEnter:
-		val := strings.TrimSpace(m.titleInput.Value())
-		val = strings.ReplaceAll(val, "\r", "")
-		val = strings.ReplaceAll(val, "\n", " ")
-		limit := 32
-		if m.titleField > 0 {
-			limit = 22
-		}
-		if n := len([]rune(val)); n > limit {
-			m.titleErr = fmt.Sprintf(tr("ограничение: максимум %d символов (у тебя %d)"), limit, n)
-			return m, nil
-		}
-		if m.titleField == 0 {
-			cfg.ChannelText = val
-		} else {
-			cfg.CustomTexts[m.titleField-1] = val
-		}
-		saveSettings()
-		m.titleErr = ""
-		m.state = stSettings
-		return m, nil
+func setCellRow(l, r string, LW, RW int) string {
+	// страховка: ячейка шире колонки режется (ANSI-safe),
+	// рамка не порвётся ни при каком значении.
+	if lipgloss.Width(l) > LW {
+		l = ansi.Truncate(l, LW, "…")
 	}
-	var cmd tea.Cmd
-	m.titleInput, cmd = m.titleInput.Update(msg)
-	return m, cmd
+	if lipgloss.Width(r) > RW {
+		r = ansi.Truncate(r, RW, "…")
+	}
+	return "│" + " " + padEnd(l, LW) + " " +
+		"│" + " " + padEnd(r, RW) + " " + "│"
 }
 
-func (m model) titleEditView() string {
-	label := tr("channel title")
-	limit := 32
-	if m.titleField > 0 {
-		label = fmt.Sprintf(tr("текст OSD-слота %d "), m.titleField)
-		limit = 22
+func setValBool(b bool) string {
+	if b {
+		return styleGreen.Render("[" + tr("вкл") + "]")
 	}
-	var sb strings.Builder
-	sb.WriteString(bannerBlock())
-	sb.WriteString(strings.Repeat("\n", 4))
-	sb.WriteString(panelS(tr("титры")) + "\n\n")
-	sb.WriteString(centerLine(cyan(tr("впиши сюда что-то, что будут видеть все:"))) + "\n")
-	sb.WriteString(centerLine(cyan(label)+": "+m.titleInput.View()) + "\n")
-	sb.WriteString("\n" + centerLine(dim(fmt.Sprintf(tr("! до %d символов ! пусто — поле не используется !"), limit))) + "\n")
-	if m.titleErr != "" {
-		sb.WriteString("\n" + centerLine(red("↑ "+m.titleErr)) + "\n")
-	}
-	return sb.String()
+	return styleRed.Render("[" + tr("выкл") + "]")
 }
 
-func (m *model) openDummyEdit() {
-	m.dummyInput.SetValue(cfg.DummyLogin + ":" + cfg.DummyPass)
-	m.dummyErr = ""
-	m.dummyInput.Focus()
-	m.state = stDummyEdit
-}
+func setValBlue(s string) string { return styleBlue.Render("[" + s + "]") }
 
-func (m model) updateDummyEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc:
-		m.dummyErr = ""
-		m.state = stSettings
-		return m, nil
-	case tea.KeyEnter:
-		val := strings.TrimSpace(m.dummyInput.Value())
-		val = strings.ReplaceAll(val, "\r", "")
-		val = strings.ReplaceAll(val, "\n", "")
-		login, pass, ok := strings.Cut(val, ":")
-		if !ok || login == "" || pass == "" {
-			m.dummyErr = tr("нужен формат login:passwd")
-			return m, nil
+func setValWhite(s string) string { return styleWhite.Render("[" + s + "]") }
+
+// settingsLeftLines строит левую колонку: метка слева, значение справа.
+// Значение стрипается под ширину: влезает — целиком, нет —
+// первые N (минимум 10) + …. Строка правки показывает инпут как есть.
+func (m model) settingsLeftLines(rows []settingsRow, LW int) []string {
+	var out []string
+	for i, row := range rows {
+		var label, val string
+		center := false
+		switch row.kind {
+		case rowSnaps:
+			label, val = tr("снапы"), setValBool(cfg.Snaps)
+		case rowXML:
+			label, val = "autogen .xml", setValBool(cfg.XML)
+		case rowTitles:
+			label, val = "OSDChanger", setValBool(cfg.Titles)
+		case rowEditChan:
+			label = tr("└ channel title")
+			val = quoteValN(cfg.ChannelText, stripBudget(LW, 4+len([]rune(label))))
+		case rowEditCT0, rowEditCT1, rowEditCT2, rowEditCT3:
+			n := int(row.kind - rowEditCT0)
+			label = fmt.Sprintf(tr("└ OSD слот %d"), n+1)
+			val = quoteValN(cfg.CustomTexts[n], stripBudget(LW, 4+len([]rune(label))))
+		case rowOSDColor:
+			label, val = tr("└ цвет OSD"), setValWhite(osdColorName(cfg.OSDColor))
+		case rowDummy:
+			label = tr("добавить нового юзера")
+		case rowSkip:
+			label, val = tr("пропускать проблемные"), setValBool(cfg.SkipShitty)
+		case rowWipe:
+			label, val = tr("вычистка юзеров"), setValBool(cfg.WipeUsers)
+		case rowBrute:
+			label, val = tr("пары кредов"), bruteCount()
+		case rowDebug:
+			label, val = tr("лог-режим"), setValBool(cfg.Debug)
+		case rowGovernor:
+			label, val = tr("губернатор скорости"), setValBool(cfg.Governor)
+		case rowGovCap:
+			label, val = tr("потолок pps"), setValBlue(govCapLabel(cfg.GovernorCap))
+		case rowDiscord:
+			label, val = tr("discord rpc"), setValBool(cfg.DiscordRPC)
+		case rowLang:
+			label, val = tr("язык"), setValWhite(langName(cfg.Lang))
+		case rowBack:
+			label, center = tr("назад"), true
 		}
-		if err := exploit.ValidateDummy(login, pass); err != nil {
-			m.dummyErr = err.Error()
-			return m, nil
+		sub := row.kind == rowEditChan ||
+			(row.kind >= rowEditCT0 && row.kind <= rowEditCT3)
+		prefix := "  "
+		if sub {
+			prefix = "    "
 		}
-		cfg.DummyLogin, cfg.DummyPass = login, pass
-		saveSettings()
-		m.dummyErr = ""
-		m.state = stSettings
-		return m, nil
+		if i == m.setCur {
+			prefix = "▶ "
+			if sub {
+				prefix = "▶   "
+			}
+		}
+		var line string
+		switch {
+		case center:
+			line = prefix + centerPad(label, LW-lipgloss.Width(prefix))
+		case i == m.setEdit:
+			// строка правки: метка + живой инпут, без стрипов
+			line = prefix + label + ": " + `"` + m.setInput.View() + `"`
+			if m.setEditErr != "" {
+				out = append(out, line)
+				line = "  " + red("↑ "+m.setEditErr)
+				break
+			}
+		case val == "":
+			if i == m.setCur {
+				line = prefix + styleBold.Render(label)
+			} else {
+				line = prefix + label
+			}
+		default:
+			gap := LW - lipgloss.Width(prefix) - lipgloss.Width(label) - lipgloss.Width(val)
+			if gap < 1 {
+				gap = 1
+			}
+			if i == m.setCur {
+				line = prefix + styleBold.Render(label) + strings.Repeat(" ", gap) + val
+			} else {
+				line = prefix + label + strings.Repeat(" ", gap) + val
+			}
+		}
+		if !setRowEnabled(row.kind, &cfg) {
+			line = dim(stripANSI(line))
+		}
+		out = append(out, line)
 	}
-	var cmd tea.Cmd
-	m.dummyInput, cmd = m.dummyInput.Update(msg)
-	return m, cmd
+	return out
 }
 
-func (m model) dummyEditView() string {
-	var sb strings.Builder
-	sb.WriteString(bannerBlock())
-	sb.WriteString(strings.Repeat("\n", 4))
-	sb.WriteString(panelS(tr("креды юзера")) + "\n\n")
-	sb.WriteString(centerLine(cyan(tr("новый юзер в формате login:passwd:"))) + "\n")
-	sb.WriteString(centerLine(m.dummyInput.View()) + "\n")
-	sb.WriteString("\n" + centerLine(dim(tr("по дефолту/by default: krushitel:TancuiPantera1337"))) + "\n")
-	if m.dummyErr != "" {
-		sb.WriteString("\n" + centerLine(red("↑ "+m.dummyErr)) + "\n")
+// setRowEnabled — активна ли строка: сабы OSD только при вкл OSDChanger.
+func setRowEnabled(kind int, cfg *Settings) bool {
+	switch kind {
+	case rowEditChan, rowEditCT0, rowEditCT1, rowEditCT2, rowEditCT3, rowOSDColor:
+		return cfg.Titles
 	}
-	return sb.String()
+	return true
+}
+
+// stripBudget — сколько клеток отдаём значению: влезает — всё,
+// нет — минимум 10 символов + кавычки и … .
+func stripBudget(LW, used int) int {
+	avail := LW - used - 1
+	if avail < 13 {
+		avail = 13
+	}
+	return avail
+}
+
+// quoteValN — значение в кавычках: влезает целиком — целиком,
+// нет — первые avail-3 символа + … (но не меньше 10 символов).
+func quoteValN(s string, avail int) string {
+	r := []rune(s)
+	if s == "" {
+		return tr("(пусто)")
+	}
+	if len(r)+2 <= avail {
+		return fmt.Sprintf("%q", s)
+	}
+	n := avail - 3
+	if n < 10 {
+		n = 10
+	}
+	if n > len(r) {
+		n = len(r)
+	}
+	return fmt.Sprintf("%q…", string(r[:n]))
+}
+
+func centerPad(s string, w int) string {
+	if w <= 0 {
+		return s
+	}
+	if pad := w - lipgloss.Width(s); pad > 0 {
+		return strings.Repeat(" ", pad/2) + s
+	}
+	return s
+}
+
+func langName(l string) string {
+	if l == "en" {
+		return "english"
+	}
+	return "русский"
+}
+
+// settingsDesc возвращает правую колонку: заголовок и сырые строки.
+// Числа — правда из кода: слот 22, channel 32.
+func (m model) settingsDesc(kind int, RW int) (string, []string) {
+	var title string
+	var raw []string
+	kv := func(name, desc string) string { return "  " + name + " — " + desc }
+	switch kind {
+	case rowSnaps:
+		title = tr("снапы")
+		raw = append(raw, tr("Снапы со взломанных камер складываются в папку прогона."), "",
+			tr("Значения:"),
+			kv(tr("вкл"), tr("снапы сохраняются")),
+			kv(tr("выкл"), tr("только креды, без картинок")), "",
+			fmt.Sprintf(tr("По умолчанию: %s"), tr("вкл")))
+	case rowXML:
+		title = "autogen .xml"
+		raw = append(raw, tr("Генерирует .xml для импорта камер в SmartPSS."), "",
+			tr("Значения:"),
+			kv(tr("вкл"), tr("файлы создаются")),
+			kv(tr("выкл"), tr("ничего не генерируем")), "",
+			fmt.Sprintf(tr("По умолчанию: %s"), tr("выкл")))
+	case rowTitles:
+		title = "OSDChanger"
+		raw = append(raw, tr("Меняет название канала + текст до 4х слотов в OSD "), "",
+			tr("Значения:"),
+			kv(tr("вкл"), tr("подмена активна")),
+			kv(tr("выкл"), tr("используются оригиналы")), "",
+			tr("Макс. длина слота: 22 символа"), "",
+			fmt.Sprintf(tr("По умолчанию: %s"), tr("выкл")))
+	case rowEditChan:
+		title = "channel title"
+		raw = append(raw,
+			tr("Название канала. Видят все, у кого открыт поток."),
+			tr("Макс. длина: 32 символа. Пусто — поле не используется."))
+	case rowEditCT0, rowEditCT1, rowEditCT2, rowEditCT3:
+		n := int(kind - rowEditCT0)
+		title = fmt.Sprintf(tr("OSD слот %d"), n+1)
+		raw = append(raw,
+			tr("Строка поверх картинки."),
+			tr("Макс. длина: 22 символа. Пусто — поле не используется."))
+	case rowOSDColor:
+		title = tr("цвет OSD")
+		raw = append(raw,
+			tr("Цвет текста на OSD."),
+			tr("Формат: R,G,B (0-255)"), "",
+			fmt.Sprintf(tr("По умолчанию: %s"), "255,255,255"))
+	case rowDummy:
+		title = tr("добавить нового юзера")
+		raw = append(raw,
+			tr("Юзер, которого крушитель добавит на взломанные камеры."),
+			tr("Формат: login:passwd."))
+	case rowSkip:
+		title = tr("пропускать проблемные")
+		raw = append(raw, tr("Если включено - пропускает все камеры со своими болячками (например - проблемы с туннелем)"), "",
+			tr("Значения:"),
+			kv(tr("вкл"), tr("проблемные скипаются")),
+			kv(tr("выкл"), tr("долбим все до конца")), "",
+			fmt.Sprintf(tr("По умолчанию: %s"), tr("вкл")))
+	case rowWipe:
+		title = tr("вычистка юзеров")
+		raw = append(raw, tr("Удаляет лишних юзеров на взломанных камерах"), "",
+			tr("Значения:"),
+			kv(tr("вкл"), tr("удаление всех юзеров")),
+			kv(tr("выкл"), tr("не тронуто")), "",
+			fmt.Sprintf(tr("По умолчанию: %s"), tr("выкл")))
+	case rowBrute:
+		title = tr("пары кредов")
+		raw = append(raw,
+			tr("Пары кредов для брута"),
+			tr("Формат: login:passwd, по одной на строку."), "",
+			fmt.Sprintf(tr("По умолчанию: %s"), tr("(пусто)")))
+	case rowDebug:
+		title = tr("лог-режим")
+		raw = append(raw, tr("Подробные логи: туннели, запросы, ошибки."), "",
+			tr("Значения:"),
+			kv(tr("вкл"), tr("логировать всё")),
+			kv(tr("выкл"), tr("только важное")), "",
+			fmt.Sprintf(tr("По умолчанию: %s"), tr("выкл")))
+	case rowGovernor:
+		title = tr("губернатор скорости")
+		raw = append(raw, tr("Режет скорость скана, чтобы не упираться в лимиты."), "",
+			tr("Значения:"),
+			kv(tr("вкл"), tr("скан идёт ровно")),
+			kv(tr("выкл"), tr("на полную мощность")), "",
+			fmt.Sprintf(tr("По умолчанию: %s"), tr("вкл")))
+	case rowGovCap:
+		title = tr("потолок pps")
+		raw = append(raw,
+			tr("Потолок скорости в пакетах в секунду"),
+			tr("Enter — следующее: 250 … 10000, авто."), "",
+			fmt.Sprintf(tr("По умолчанию: %s"), tr("авто")))
+	case rowDiscord:
+		title = tr("discord rpc")
+		raw = append(raw, tr("Показывает всем в дискорде что ты скид"), "",
+			tr("Значения:"),
+			kv(tr("вкл"), tr("статус виден")),
+			kv(tr("выкл"), tr("статус скрыт")), "",
+			fmt.Sprintf(tr("По умолчанию: %s"), tr("выкл")))
+	case rowLang:
+		title = tr("язык")
+		raw = append(raw, tr("Язык интерфейса."), "",
+			tr("Значения:"),
+			kv("русский", tr("по-русски")),
+			kv("english", tr("in english")), "",
+			fmt.Sprintf(tr("По умолчанию: %s"), "русский"))
+	case rowBack:
+		title = tr("назад")
+		raw = append(raw, tr("вернуться в главное меню"))
+	}
+	var out []string
+	out = append(out, wrapCells([]string{title}, RW)...)
+	out = append(out, styleDim.Render(strings.Repeat("─", RW)), "")
+	for _, ln := range wrapCells(raw, RW) {
+		out = append(out, ln)
+	}
+	return title, out
+}
+
+// settingsBruteList — правая панель "список паролей": превью,
+// а в фокусе — со своим курсором и строкой ввода.
+func (m model) settingsBruteList(RW int) (string, []string) {
+	title := tr("список паролей")
+	var raw []string
+	if len(cfg.BrutePasswords) == 0 && !m.bruteAdding {
+		raw = append(raw, tr("(пусто)"))
+	}
+	for i, p := range cfg.BrutePasswords {
+		mark := " "
+		if m.bruteFocus && i == m.bruteCur && !m.bruteAdding {
+			mark = "▶"
+		}
+		raw = append(raw, fmt.Sprintf("%s %d) %s", mark, i+1, p))
+	}
+	var out []string
+	for _, ln := range wrapCells(raw, RW) {
+		out = append(out, ln)
+	}
+	// строка ввода и ошибка — мимо враппера: там ANSI курсора,
+	// резать по рунам её нельзя. ширина инпута уже ужата под панель.
+	if m.bruteAdding {
+		out = append(out, "", "login:passwd: "+m.setInput.View())
+		if m.setEditErr != "" {
+			out = append(out, "", red(cutStr("↑ "+m.setEditErr, RW)))
+		}
+	}
+	return title, out
+}
+
+func wrapCells(lines []string, w int) []string {
+	if w < 10 {
+		w = 10
+	}
+	var out []string
+	for _, p := range lines {
+		r := []rune(p)
+		if len(r) == 0 {
+			out = append(out, "")
+			continue
+		}
+		for len(r) > w {
+			cut := w
+			for i := w; i > w-15 && i > 0; i-- {
+				if r[i] == ' ' {
+					cut = i
+					break
+				}
+			}
+			out = append(out, string(r[:cut]))
+			r = r[cut:]
+			if len(r) > 0 && r[0] == ' ' {
+				r = r[1:]
+			}
+		}
+		out = append(out, string(r))
+	}
+	return out
 }
 
 func quoteVal(s string) string {
