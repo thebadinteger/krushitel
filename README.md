@@ -1,8 +1,4 @@
 <div align="center">
-<h1>Это бета версия. Может быть очень нестабильной </h1>
-</div>
-
-<div align="center">
 
 <h1>krushitel</h1>
 

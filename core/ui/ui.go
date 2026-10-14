@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"krushitel/core/i18n"
 	"krushitel/core/update"
 )
 
@@ -52,10 +53,14 @@ var termWidth int
 
 func bannerBlock() string {
 	art := strings.Split(strings.TrimRight(bannerArt, "\n"), "\n")
+	name := "крушитель v" + update.CurrentVersion
+	if i18n.Lang() == "en" {
+		name = "krushitel v" + update.CurrentVersion
+	}
 	info := []string{
 		"",
-		styleCyan.Bold(true).Render("крушитель v" + update.FullVersion()),
-		styleYellow.Bold(true).Render(tr("Это бета версия")),
+		styleCyan.Bold(true).Render(name),
+		styleYellow.Bold(true).Render("try p2pwn if ts will work bad)"),
 		styleDim.Render("exploit-based dahua sn scanner"),
 		styleDim.Render("t.me/kkrushitel"),
 		styleDim.Render("github.com/undervolter/krushitel"),

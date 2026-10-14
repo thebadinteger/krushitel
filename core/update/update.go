@@ -19,8 +19,8 @@ import (
 
 const CurrentVersion = "1.4"
 
-// VersionSuffix — стадия: релизы идут как v1.4, ветка-core как v1.4-beta.
-const VersionSuffix = "-beta"
+// VersionSuffix — стадия: пусто = релиз (v1.4).
+const VersionSuffix = ""
 
 // BuildDate вшивается на сборке скриптами (build_all.cmd / build_release.ps1):
 //
@@ -29,7 +29,7 @@ const VersionSuffix = "-beta"
 // Формат ddmmyy. Пусто = локальная сборка без штампа.
 var BuildDate string
 
-// FullVersion — служебная строка для баннеров: v1.4-beta (build 101026).
+// FullVersion — служебная строка для баннеров: v1.4 (build 101026).
 // Сравнение с релизами (Check/newerThan) идёт по голому CurrentVersion,
 // суффикс и штамп туда не лезут.
 func FullVersion() string {

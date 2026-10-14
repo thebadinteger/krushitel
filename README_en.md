@@ -1,8 +1,4 @@
 <div align="center">
-<h2>This is a beta version - some features may be extremely unstable </h2>
-</div>
-
-<div align="center">
 
 <h1>krushitel</h1>
 
