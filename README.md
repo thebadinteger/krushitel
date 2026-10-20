@@ -12,6 +12,11 @@
 
 </div>
 
+<p align="center">
+  <h3>⚠️ This project is inactive</h3>
+  <em>That means that this repo won't get updates for an extended period</em>
+</p>
+
 <div align="center">
 <h2>Сканер уязвимостей Dahua по серийному номеру</h2>
 </div>
