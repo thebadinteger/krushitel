@@ -13,6 +13,11 @@
 
 </div>
 
+<p align="center">
+  <h3>⚠️ This project is inactive</h3>
+  <em>That means that this repo won't get updates for an extended period</em>
+</p>
+
 <div align="center">
 <h2>Vulnerability scanner for Dahua CCTV by serial number.</h2>
 </div>
