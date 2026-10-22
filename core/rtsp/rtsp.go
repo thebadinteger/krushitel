@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +42,9 @@ func SnapshotChannel(addr, user, pass string, channel int, timeout time.Duration
 			return data, nil
 		}
 		lastErr = err
+		if isTimeoutErr(err) {
+			break
+		}
 	}
 	if lastErr == nil {
 		lastErr = errors.New("rtsp: не удалось")
@@ -55,6 +59,17 @@ func snapshotURL(rtspURL, user, pass string, timeout time.Duration) ([]byte, err
 		rtsnap.WithAuth(user, pass),
 		rtsnap.WithTimeout(timeout),
 	)
+}
+
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "timeout") || strings.Contains(s, "deadline exceeded")
 }
 
 func ProbeChannel(addr, user, pass string, channel int, timeout time.Duration) bool {
